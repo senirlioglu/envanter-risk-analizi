@@ -114,6 +114,75 @@ def get_last_word(text):
     return words[-1].upper() if words else ""
 
 
+def extract_quantity(text):
+    """Gramaj/ML çıkar: '750 ML' → 750, 'ML'"""
+    import re
+    if pd.isna(text):
+        return None, None
+    
+    text = str(text).upper()
+    
+    # Patterns: 750ML, 750 ML, 1.5L, 1,5 LT, 220G, 220 G, 1KG
+    patterns = [
+        r'(\d+[.,]?\d*)\s*(ML|LT|L|G|GR|KG|MG)\b',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = float(match.group(1).replace(',', '.'))
+            unit = match.group(2)
+            
+            # Normalize units to base (ML, G)
+            if unit in ['LT', 'L']:
+                value = value * 1000  # to ML
+                unit = 'ML'
+            elif unit == 'KG':
+                value = value * 1000  # to G
+                unit = 'G'
+            elif unit == 'GR':
+                unit = 'G'
+            
+            return value, unit
+    
+    return None, None
+
+
+def is_quantity_similar(qty1, unit1, qty2, unit2, tolerance=0.30):
+    """Gramaj benzer mi? Aynı boyut kategorisinde mi?"""
+    if qty1 is None or qty2 is None:
+        return True  # Gramaj bulunamadıysa benzer say
+    
+    if unit1 != unit2:
+        return False  # Farklı birim (ML vs G) benzer değil
+    
+    if qty1 == 0 or qty2 == 0:
+        return True
+    
+    # Oran kontrolü: max 3x fark olabilir
+    ratio = max(qty1, qty2) / min(qty1, qty2)
+    if ratio > 3:
+        return False  # 3 kattan fazla fark varsa benzer değil
+    
+    # Boyut kategorileri
+    def get_size_category(qty, unit):
+        if unit == 'ML':
+            if qty <= 400: return 'S'      # Küçük: 0-400ml
+            elif qty <= 1000: return 'M'   # Orta: 400-1000ml
+            else: return 'L'               # Büyük: 1000ml+
+        elif unit == 'G':
+            if qty <= 100: return 'S'      # Küçük: 0-100g
+            elif qty <= 400: return 'M'    # Orta: 100-400g
+            else: return 'L'               # Büyük: 400g+
+        return 'M'
+    
+    cat1 = get_size_category(qty1, unit1)
+    cat2 = get_size_category(qty2, unit2)
+    
+    # Sadece aynı kategorideyse benzer
+    return cat1 == cat2
+
+
 def detect_internal_theft(df):
     """
     İÇ HIRSIZLIK TESPİTİ:
@@ -302,50 +371,87 @@ def detect_cigarette_shortage(df):
 def find_product_families(df):
     """
     Benzer ürün ailesi analizi
-    Kural: İlk 2 kelime + Son kelime (marka) + Mal Grubu aynıysa = AİLE
+    Kural: İlk 2 kelime + Son kelime (marka) + Mal Grubu + Gramaj (±%30) aynıysa = AİLE
     """
     df_copy = df.copy()
     df_copy['İlk2Kelime'] = df_copy['Malzeme Adı'].apply(get_first_two_words)
     df_copy['Marka'] = df_copy['Malzeme Adı'].apply(get_last_word)
+    df_copy['Gramaj'] = df_copy['Malzeme Adı'].apply(lambda x: extract_quantity(x)[0])
+    df_copy['GramajBirim'] = df_copy['Malzeme Adı'].apply(lambda x: extract_quantity(x)[1])
     
     families = []
+    processed_indices = set()
     
-    grouped = df_copy.groupby(['Ürün Grubu', 'İlk2Kelime', 'Marka'])
-    
-    for (urun_grubu, ilk2, marka), group in grouped:
-        if len(group) > 1:
-            toplam_fark = group['Fark Miktarı'].sum()
-            toplam_kismi = group['Kısmi Envanter Miktarı'].sum()
-            toplam_onceki = group['Önceki Fark Miktarı'].sum()
-            aile_toplami = toplam_fark + toplam_kismi + toplam_onceki
+    # Her ürün için potansiyel aile bul
+    for idx, row in df_copy.iterrows():
+        if idx in processed_indices:
+            continue
+        
+        ilk2 = row['İlk2Kelime']
+        marka = row['Marka']
+        urun_grubu = row['Ürün Grubu']
+        gramaj = row['Gramaj']
+        birim = row['GramajBirim']
+        
+        if not ilk2 or not marka:
+            continue
+        
+        # Aynı grup içinde benzer ürünleri bul
+        family_mask = (
+            (df_copy['İlk2Kelime'] == ilk2) & 
+            (df_copy['Marka'] == marka) & 
+            (df_copy['Ürün Grubu'] == urun_grubu)
+        )
+        
+        potential_family = df_copy[family_mask]
+        
+        if len(potential_family) <= 1:
+            continue
+        
+        # Gramaj kontrolü - benzer gramajlı olanları filtrele
+        family_members = []
+        for fam_idx, fam_row in potential_family.iterrows():
+            if is_quantity_similar(gramaj, birim, fam_row['Gramaj'], fam_row['GramajBirim']):
+                family_members.append(fam_idx)
+                processed_indices.add(fam_idx)
+        
+        if len(family_members) <= 1:
+            continue
+        
+        family_df = df_copy.loc[family_members]
+        
+        toplam_fark = family_df['Fark Miktarı'].sum()
+        toplam_kismi = family_df['Kısmi Envanter Miktarı'].sum()
+        toplam_onceki = family_df['Önceki Fark Miktarı'].sum()
+        aile_toplami = toplam_fark + toplam_kismi + toplam_onceki
+        
+        if family_df['Fark Miktarı'].abs().sum() > 0:
+            if abs(aile_toplami) <= 2:
+                sonuc = "KOD KARIŞIKLIĞI - HIRSIZLIK DEĞİL"
+                risk = "DÜŞÜK"
+            elif aile_toplami < -2:
+                sonuc = "AİLEDE NET AÇIK VAR"
+                risk = "ORTA"
+            else:
+                sonuc = "AİLEDE FAZLA VAR"
+                risk = "DÜŞÜK"
             
-            if group['Fark Miktarı'].abs().sum() > 0:
-                if abs(aile_toplami) <= 2:
-                    sonuc = "KOD KARIŞIKLIĞI - HIRSIZLIK DEĞİL"
-                    risk = "DÜŞÜK"
-                elif aile_toplami < -2:
-                    sonuc = "AİLEDE NET AÇIK VAR"
-                    risk = "ORTA"
-                else:
-                    sonuc = "AİLEDE FAZLA VAR"
-                    risk = "DÜŞÜK"
-                
-                urunler = group['Malzeme Adı'].tolist()
-                farklar = group['Fark Miktarı'].tolist()
-                
-                families.append({
-                    'Mal Grubu': urun_grubu,
-                    'İlk 2 Kelime': ilk2,
-                    'Marka': marka,
-                    'Ürün Sayısı': len(group),
-                    'Toplam Fark': toplam_fark,
-                    'Toplam Kısmi': toplam_kismi,
-                    'Toplam Önceki': toplam_onceki,
-                    'AİLE TOPLAMI': aile_toplami,
-                    'Sonuç': sonuc,
-                    'Risk': risk,
-                    'Ürünler': ' | '.join([f"{u[:30]}({f})" for u, f in zip(urunler[:5], farklar[:5])])
-                })
+            urunler = family_df['Malzeme Adı'].tolist()
+            farklar = family_df['Fark Miktarı'].tolist()
+            
+            families.append({
+                'Mal Grubu': urun_grubu,
+                'İlk 2 Kelime': ilk2,
+                'Marka': marka,
+                'Ürün Sayısı': len(family_members),
+                'Toplam Fark': toplam_fark,
+                'Toplam Kısmi': toplam_kismi,
+                'Toplam Önceki': toplam_onceki,
+                'AİLE TOPLAMI': aile_toplami,
+                'Sonuç': sonuc,
+                'Risk': risk,
+                'Ürünler': ' | '.join([f"{u[:25]}({f})" for u, f in zip(urunler[:5], farklar[:5])])
+            })
     
     result_df = pd.DataFrame(families)
     if len(result_df) > 0:
@@ -381,7 +487,64 @@ def detect_external_theft(df):
     return result_df
 
 
-def generate_executive_summary(df):
+def check_kasa_activity_products(df, kasa_kodlari):
+    """
+    Kasa Aktivitesi Ürünleri Kontrolü
+    Fiyat değişikliği olan ürünlerde manipülasyon riski
+    """
+    results = []
+    
+    for idx, row in df.iterrows():
+        kod = str(row.get('Malzeme Kodu', ''))
+        
+        if kod in kasa_kodlari:
+            fark = row['Fark Miktarı']
+            kismi = row['Kısmi Envanter Miktarı']
+            onceki = row['Önceki Fark Miktarı']
+            toplam = fark + kismi + onceki
+            
+            if toplam != 0:  # Sadece sıfır olmayanları göster
+                if toplam > 0:
+                    durum = "FAZLA (+)"
+                    risk = "⚠️ MANİPÜLASYON RİSKİ"
+                else:
+                    durum = "AÇIK (-)"
+                    risk = "KAYIP"
+                
+                results.append({
+                    'Malzeme Kodu': kod,
+                    'Malzeme Adı': row.get('Malzeme Adı', ''),
+                    'Fark Miktarı': fark,
+                    'Kısmi Env.': kismi,
+                    'Önceki Fark': onceki,
+                    'TOPLAM': toplam,
+                    'Fark Tutarı': row['Fark Tutarı'],
+                    'Durum': durum,
+                    'Risk': risk
+                })
+    
+    result_df = pd.DataFrame(results)
+    if len(result_df) > 0:
+        # Önce fazla (+) olanlar, sonra açık (-) olanlar
+        result_df['_sort'] = result_df['TOPLAM'].apply(lambda x: 0 if x > 0 else 1)
+        result_df = result_df.sort_values(['_sort', 'TOPLAM'], ascending=[True, False])
+        result_df = result_df.drop('_sort', axis=1)
+    
+    return result_df
+
+
+def load_kasa_activity_codes():
+    """Kasa aktivitesi ürün kodlarını yükle"""
+    try:
+        kasa_file = "/mnt/user-data/uploads/Kopya_10_tl_ürünleri.xlsx"
+        kasa_df = pd.read_excel(kasa_file)
+        codes = set(kasa_df['Malzeme'].astype(str).tolist())
+        return codes
+    except:
+        return set()
+
+
+def generate_executive_summary(df, kasa_activity_df=None):
     """Yönetici özeti - mal grubu bazlı yorumlar"""
     comments = []
     
@@ -407,6 +570,19 @@ def generate_executive_summary(df):
     for _, row in top_fire.iterrows():
         if row['Toplam Fire'] < -500:
             comments.append(f"🔥 {row['Ürün Grubu']}: {row['Toplam Fire']:,.0f} TL fire")
+    
+    # Kasa aktivitesi yorumu
+    if kasa_activity_df is not None and len(kasa_activity_df) > 0:
+        fazla_df = kasa_activity_df[kasa_activity_df['TOPLAM'] > 0]
+        acik_df = kasa_activity_df[kasa_activity_df['TOPLAM'] < 0]
+        
+        if len(fazla_df) > 0:
+            toplam_fazla = fazla_df['TOPLAM'].sum()
+            comments.append(f"💰 KASA AKTİVİTESİ: {len(fazla_df)} üründe +{toplam_fazla:.0f} adet FAZLA - MANİPÜLASYON RİSKİ!")
+        
+        if len(acik_df) > 0:
+            toplam_acik = acik_df['TOPLAM'].sum()
+            comments.append(f"💰 KASA AKTİVİTESİ: {len(acik_df)} üründe {toplam_acik:.0f} adet AÇIK")
     
     return comments, group_stats
 
@@ -499,7 +675,7 @@ def auto_adjust_column_width(ws):
 
 
 def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_df, 
-                       external_df, family_df, fire_manip_df, top20_df, 
+                       external_df, family_df, fire_manip_df, kasa_activity_df, top20_df, 
                        exec_comments, group_stats, magaza_kodu, magaza_adi, params):
     """Excel raporu - tüm sheet'ler dahil"""
     
@@ -681,6 +857,26 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
         
         auto_adjust_column_width(ws8)
     
+    # ===== KASA AKTİVİTESİ =====
+    if len(kasa_activity_df) > 0:
+        ws9 = wb.create_sheet("KASA AKTİVİTESİ")
+        ws9['A1'] = "⚠️ KASA AKTİVİTESİ ÜRÜNLERİ - FAZLA (+) OLANLAR MANİPÜLASYON RİSKİ!"
+        ws9['A1'].font = Font(bold=True, size=12, color='FF0000')
+        
+        for col, h in enumerate(kasa_activity_df.columns, 1):
+            cell = ws9.cell(row=3, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+        
+        for r_idx, row in enumerate(kasa_activity_df.values, 4):
+            for c_idx, val in enumerate(row, 1):
+                cell = ws9.cell(row=r_idx, column=c_idx, value=val)
+                # Fazla olanları kırmızı yap
+                if c_idx == 6 and isinstance(val, (int, float)) and val > 0:  # TOPLAM sütunu
+                    cell.fill = PatternFill('solid', fgColor='FFCCCC')
+        
+        auto_adjust_column_width(ws9)
+    
     output = BytesIO()
     wb.save(output)
     output.seek(0)
@@ -729,6 +925,9 @@ if uploaded_file is not None:
             selected = magazalar[0]
             df_display = df.copy()
         
+        # Kasa aktivitesi kodlarını yükle
+        kasa_kodlari = load_kasa_activity_codes()
+        
         # Analizler
         internal_df = detect_internal_theft(df_display)
         chronic_df = detect_chronic_products(df_display)
@@ -737,7 +936,8 @@ if uploaded_file is not None:
         external_df = detect_external_theft(df_display)
         family_df = find_product_families(df_display)
         fire_manip_df = detect_fire_manipulation(df_display)
-        exec_comments, group_stats = generate_executive_summary(df_display)
+        kasa_activity_df = check_kasa_activity_products(df_display, kasa_kodlari)
+        exec_comments, group_stats = generate_executive_summary(df_display, kasa_activity_df)
         
         internal_codes = set(internal_df['Malzeme Kodu'].astype(str).tolist()) if len(internal_df) > 0 else set()
         chronic_codes = set(chronic_df['Malzeme Kodu'].astype(str).tolist()) if len(chronic_df) > 0 else set()
@@ -769,7 +969,7 @@ if uploaded_file is not None:
             st.metric("📊 Oran", f"%{oran:.2f}")
         
         # Metrikler - Alt
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
             st.metric("🔒 İç Hırs.", f"{len(internal_df)}")
         with col2:
@@ -783,6 +983,12 @@ if uploaded_file is not None:
                 st.metric("🚬 Sigara", "0")
         with col5:
             st.metric("👨‍👩‍👧 Aile", f"{len(family_df)}")
+        with col6:
+            kasa_fazla = len(kasa_activity_df[kasa_activity_df['TOPLAM'] > 0]) if len(kasa_activity_df) > 0 else 0
+            if kasa_fazla > 0:
+                st.metric("💰 Kasa Akt.", f"{kasa_fazla}", delta="FAZLA!", delta_color="inverse")
+            else:
+                st.metric("💰 Kasa Akt.", f"{len(kasa_activity_df)}")
         
         # Yönetici Özeti
         if exec_comments:
@@ -793,7 +999,7 @@ if uploaded_file is not None:
         st.markdown("---")
         
         # Sekmeler
-        tabs = st.tabs(["🚨 Riskli 20", "🔒 İç Hırs.", "👨‍👩‍👧 Aile", "🔄 Kronik", "🔥 Fire", "🚬 Sigara", "📥 İndir"])
+        tabs = st.tabs(["🚨 Riskli 20", "🔒 İç Hırs.", "👨‍👩‍👧 Aile", "🔄 Kronik", "🔥 Fire", "🚬 Sigara", "💰 Kasa Akt.", "📥 İndir"])
         
         with tabs[0]:
             st.subheader("🚨 En Riskli 20 Ürün")
@@ -850,11 +1056,31 @@ if uploaded_file is not None:
                 st.success("Sigara açığı yok!")
         
         with tabs[6]:
+            st.subheader("💰 Kasa Aktivitesi Ürünleri")
+            st.caption("Fiyat değişikliği olan ürünler - FAZLA (+) olanlar manipülasyon riski!")
+            if len(kasa_activity_df) > 0:
+                fazla_count = len(kasa_activity_df[kasa_activity_df['TOPLAM'] > 0])
+                acik_count = len(kasa_activity_df[kasa_activity_df['TOPLAM'] < 0])
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if fazla_count > 0:
+                        st.error(f"⚠️ {fazla_count} üründe FAZLA (+) - Manipülasyon riski!")
+                    else:
+                        st.success("Fazla (+) ürün yok")
+                with col2:
+                    st.info(f"📉 {acik_count} üründe açık (-)")
+                
+                st.dataframe(kasa_activity_df, use_container_width=True, hide_index=True)
+            else:
+                st.success("Kasa aktivitesi ürünlerinde sorun yok!")
+        
+        with tabs[7]:
             st.subheader("📥 Rapor İndir")
             
             excel_output = create_excel_report(
                 df_display, internal_df, chronic_df, chronic_fire_df, cigarette_df,
-                external_df, family_df, fire_manip_df, top20_df,
+                external_df, family_df, fire_manip_df, kasa_activity_df, top20_df,
                 exec_comments, group_stats, selected, magaza_adi, params
             )
             
@@ -886,12 +1112,14 @@ if uploaded_file is not None:
                                 
                                 int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
                                 chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
+                                kasa_df = check_kasa_activity_products(df_mag, kasa_kodlari)
                                 
                                 t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
+                                exec_c, grp_s = generate_executive_summary(df_mag, kasa_df)
                                 
                                 excel_data = create_excel_report(
                                     df_mag, int_df, chr_df, chr_fire_df, cig_df,
-                                    ext_df, fam_df, fire_df, t20_df,
+                                    ext_df, fam_df, fire_df, kasa_df, t20_df,
                                     exec_c, grp_s, mag, mag_adi, params
                                 )
                                 
