@@ -988,7 +988,15 @@ if uploaded_file is not None:
             magaza_options = [magaza_isimleri[m] for m in magazalar]
             selected_option = st.selectbox("🏪 Mağaza Seçin", magaza_options)
             # Seçilen option'dan kodu çıkar
-            selected = selected_option.split(" - ")[0]
+            selected_str = selected_option.split(" - ")[0]
+            # Orijinal tipte bul
+            selected = None
+            for m in magazalar:
+                if str(m) == selected_str:
+                    selected = m
+                    break
+            if selected is None:
+                selected = magazalar[0]
             df_display = df[df['Mağaza Kodu'] == selected].copy()
             magaza_adi = df_display['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_display.columns and len(df_display) > 0 else ''
         else:
