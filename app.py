@@ -843,8 +843,8 @@ if uploaded_file is not None:
         
         with tabs[5]:
             st.subheader("🚬 Sigara Açığı")
-            st.error("⚠️ Sigarada açık = HIRSIZLIK BELİRTİSİ") if len(cigarette_df) > 0 else None
             if len(cigarette_df) > 0:
+                st.error("⚠️ Sigarada açık = HIRSIZLIK BELİRTİSİ")
                 st.dataframe(cigarette_df, use_container_width=True, hide_index=True)
             else:
                 st.success("Sigara açığı yok!")
