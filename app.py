@@ -527,9 +527,18 @@ def create_top_20_risky(df, internal_codes, chronic_codes, family_mixup_codes):
     
     risky_df = df[df['NET_ENVANTER_ETKİ_TUTARI'] < 0].copy()
     
-    risky_df['Risk Türü'], risky_df['Gerekçe'] = zip(*risky_df.apply(
-        lambda x: classify_product_risk(x, internal_codes, chronic_codes, family_mixup_codes), axis=1))
+    # Boş dataframe kontrolü
+    if len(risky_df) == 0:
+        return pd.DataFrame(columns=['Malzeme Kodu', 'Malzeme Adı', 'Ürün Grubu', 'Fark Miktarı', 
+                                     'Kısmi Env.', 'Önceki Fark', 'TOPLAM', 'İptal Satır', 
+                                     'Fark Tutarı (TL)', 'Risk Türü', 'Gerekçe', 'Önerilen Aksiyon'])
     
+    # Risk türü ve gerekçe hesapla
+    risk_data = risky_df.apply(
+        lambda x: classify_product_risk(x, internal_codes, chronic_codes, family_mixup_codes), axis=1)
+    
+    risky_df['Risk Türü'] = risk_data.apply(lambda x: x[0])
+    risky_df['Gerekçe'] = risk_data.apply(lambda x: x[1])
     risky_df['Önerilen Aksiyon'] = risky_df['Risk Türü'].apply(get_action_recommendation)
     
     risky_df = risky_df.sort_values('NET_ENVANTER_ETKİ_TUTARI', ascending=True).head(20)
