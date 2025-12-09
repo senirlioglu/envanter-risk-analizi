@@ -504,7 +504,7 @@ def detect_external_theft(df):
 
 def check_kasa_activity_products(df, kasa_kodlari):
     """
-    Kasa Aktivitesi Ürünleri Kontrolü
+    10 TL Ürünleri Ürünleri Kontrolü
     Fiyat değişikliği olan ürünlerde manipülasyon riski
     Toplam adet ve tutar etkisini hesapla
     """
@@ -525,10 +525,15 @@ def check_kasa_activity_products(df, kasa_kodlari):
             kismi = row['Kısmi Envanter Miktarı']
             onceki = row['Önceki Fark Miktarı']
             toplam = fark + kismi + onceki
-            fark_tutari = row['Fark Tutarı']
+            
+            # Tutar hesabı - Fark + Kısmi + Önceki tutarları
+            fark_tutari = row.get('Fark Tutarı', 0) or 0
+            kismi_tutari = row.get('Kısmi Envanter Tutarı', 0) or 0
+            onceki_tutari = row.get('Önceki Fark Tutarı', 0) or 0
+            urun_toplam_tutar = fark_tutari + kismi_tutari + onceki_tutari
             
             toplam_adet += toplam
-            toplam_tutar += fark_tutari
+            toplam_tutar += urun_toplam_tutar
             
             if toplam != 0:  # Sadece sıfır olmayanları göster
                 if toplam > 0:
@@ -543,7 +548,7 @@ def check_kasa_activity_products(df, kasa_kodlari):
                     'Kısmi': kismi,
                     'Önceki': onceki,
                     'TOPLAM': toplam,
-                    'Tutar': fark_tutari,
+                    'Tutar': urun_toplam_tutar,
                     'Durum': durum
                 })
     
@@ -565,7 +570,7 @@ def check_kasa_activity_products(df, kasa_kodlari):
     return result_df, summary
 
 
-# Kasa Aktivitesi Ürün Kodları (209 adet)
+# 10 TL Ürünleri Ürün Kodları (209 adet)
 # Bu ürünlerde fiyat değişikliği olduğu için manipülasyon riski var
 KASA_AKTIVITESI_KODLARI = {
     '25006448', '12002256', '12002046', '22001972', '12003295', '22002759', '22002500', '11002886', '22002215', '22002214',
@@ -624,16 +629,16 @@ def generate_executive_summary(df, kasa_activity_df=None, kasa_summary=None):
         if row['Toplam Fire'] < -500:
             comments.append(f"🔥 {row['Ürün Grubu']}: {row['Toplam Fire']:,.0f} TL fire")
     
-    # Kasa aktivitesi yorumu - TOPLAM ADET VE TUTAR
+    # 10 TL ürünleri yorumu - TOPLAM ADET VE TUTAR
     if kasa_summary is not None:
         toplam_adet = kasa_summary.get('toplam_adet', 0)
         toplam_tutar = kasa_summary.get('toplam_tutar', 0)
         
         if toplam_adet > 0:
-            comments.append(f"💰 KASA AKTİVİTESİ: NET +{toplam_adet:.0f} adet FAZLA ({toplam_tutar:,.0f} TL)")
+            comments.append(f"💰 10 TL ÜRÜNLERİ: NET +{toplam_adet:.0f} adet / {toplam_tutar:,.0f} TL FAZLA")
             comments.append(f"   ⚠️ Bu fazlalık gerçek envanter açığını gizliyor olabilir!")
         elif toplam_adet < 0:
-            comments.append(f"💰 KASA AKTİVİTESİ: NET {toplam_adet:.0f} adet AÇIK ({toplam_tutar:,.0f} TL)")
+            comments.append(f"💰 10 TL ÜRÜNLERİ: NET {toplam_adet:.0f} adet / {toplam_tutar:,.0f} TL AÇIK")
     
     return comments, group_stats
 
@@ -1034,11 +1039,11 @@ if uploaded_file is not None:
                 st.metric("🚬 Sigara", "0")
         with col5:
             if kasa_summary['toplam_adet'] > 0:
-                st.metric("💰 Kasa", f"+{kasa_summary['toplam_adet']:.0f}", delta="FAZLA!", delta_color="inverse")
+                st.metric("💰 10 TL", f"+{kasa_summary['toplam_adet']:.0f} / {kasa_summary['toplam_tutar']:,.0f}₺", delta="FAZLA!", delta_color="inverse")
             elif kasa_summary['toplam_adet'] < 0:
-                st.metric("💰 Kasa", f"{kasa_summary['toplam_adet']:.0f}", delta="AÇIK", delta_color="normal")
+                st.metric("💰 10 TL", f"{kasa_summary['toplam_adet']:.0f} / {kasa_summary['toplam_tutar']:,.0f}₺", delta="AÇIK", delta_color="normal")
             else:
-                st.metric("💰 Kasa", "0")
+                st.metric("💰 10 TL", "0")
         
         # Yönetici Özeti
         if exec_comments:
@@ -1049,7 +1054,7 @@ if uploaded_file is not None:
         st.markdown("---")
         
         # Sekmeler
-        tabs = st.tabs(["🚨 Riskli 20", "🔒 İç Hırs.", "🔄 Kr.Açık", "🔥 Kr.Fire", "🔥 Fire Man.", "🚬 Sigara", "💰 Kasa Akt.", "📥 İndir"])
+        tabs = st.tabs(["🚨 Riskli 20", "🔒 İç Hırs.", "🔄 Kr.Açık", "🔥 Kr.Fire", "🔥 Fire Man.", "🚬 Sigara", "💰 10 TL Akt.", "📥 İndir"])
         
         with tabs[0]:
             st.subheader("🚨 En Riskli 20 Ürün")
@@ -1099,13 +1104,13 @@ if uploaded_file is not None:
                 st.success("Sigara açığı yok!")
         
         with tabs[6]:
-            st.subheader("💰 Kasa Aktivitesi Ürünleri")
+            st.subheader("💰 10 TL Aktivitesi Ürünleri")
             
             if kasa_summary['toplam_adet'] != 0:
                 if kasa_summary['toplam_adet'] > 0:
-                    st.error(f"⚠️ NET +{kasa_summary['toplam_adet']:.0f} adet FAZLA ({kasa_summary['toplam_tutar']:,.0f} TL) - Gerçek açığı gizliyor olabilir!")
+                    st.error(f"⚠️ NET +{kasa_summary['toplam_adet']:.0f} adet / {kasa_summary['toplam_tutar']:,.0f} TL FAZLA - Gerçek açığı gizliyor olabilir!")
                 else:
-                    st.warning(f"📉 NET {kasa_summary['toplam_adet']:.0f} adet AÇIK ({kasa_summary['toplam_tutar']:,.0f} TL)")
+                    st.warning(f"📉 NET {kasa_summary['toplam_adet']:.0f} adet / {kasa_summary['toplam_tutar']:,.0f} TL AÇIK")
             
             if len(kasa_activity_df) > 0:
                 st.dataframe(kasa_activity_df, use_container_width=True, hide_index=True)
