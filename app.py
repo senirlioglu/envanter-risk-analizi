@@ -606,9 +606,15 @@ def generate_executive_summary(df, kasa_activity_df=None, kasa_summary=None):
     """Yönetici özeti - mal grubu bazlı yorumlar"""
     comments = []
     
+    # Önce toplam tutarı hesapla (Fark + Kısmi + Önceki)
+    df_copy = df.copy()
+    df_copy['Kısmi Envanter Tutarı'] = df_copy.get('Kısmi Envanter Tutarı', 0).fillna(0)
+    df_copy['Önceki Fark Tutarı'] = df_copy.get('Önceki Fark Tutarı', 0).fillna(0)
+    df_copy['Toplam Tutar'] = df_copy['Fark Tutarı'] + df_copy['Kısmi Envanter Tutarı'] + df_copy['Önceki Fark Tutarı']
+    
     # Mal grubu bazlı analiz
-    group_stats = df.groupby('Ürün Grubu').agg({
-        'Fark Tutarı': 'sum',
+    group_stats = df_copy.groupby('Ürün Grubu').agg({
+        'Toplam Tutar': 'sum',
         'Fire Tutarı': 'sum',
         'Satış Tutarı': 'sum',
         'Fark Miktarı': lambda x: (x < 0).sum()
