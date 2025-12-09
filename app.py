@@ -45,6 +45,8 @@ def analyze_inventory(df):
         'Kısmi Envanter Tutarı': 'Kısmi Envanter Tutarı',
         'Önceki Fark Miktarı': 'Önceki Fark Miktarı',
         'Önceki Fark Tutarı': 'Önceki Fark Tutarı',
+        'Önceki Fire Miktarı': 'Önceki Fire Miktarı',
+        'Önceki Fire Tutarı': 'Önceki Fire Tutarı',
         'İptal Satır Miktarı': 'İptal Satır Miktarı',
         'İptal Satır Tutarı': 'İptal Satır Tutarı',
         'Fire Miktarı': 'Fire Miktarı',
@@ -88,12 +90,18 @@ def analyze_inventory(df):
 def detect_internal_theft(df):
     """
     İÇ HIRSIZLIK TESPİTİ:
-    (Fark + Kısmi + Önceki) ≈ -İptal Satır VE Oran 1-5 arası
-    1 iptal, 30 açık = İç hırsızlık DEĞİL
+    - Satış Fiyatı >= 100 TL
+    - (Fark + Kısmi + Önceki) ≈ -İptal Satır
+    - Fark büyüdükçe risk AZALIR, eşitse EN YÜKSEK
     """
     results = []
     
     for idx, row in df.iterrows():
+        # Satış fiyatı kontrolü - 100 TL ve üzeri
+        satis_fiyati = row.get('Birim Fiyat', 0) or 0
+        if satis_fiyati < 100:
+            continue
+        
         fark = row['Fark Miktarı']
         kismi = row['Kısmi Envanter Miktarı']
         onceki = row['Önceki Fark Miktarı']
@@ -105,39 +113,46 @@ def detect_internal_theft(df):
         if toplam >= 0 or iptal <= 0:
             continue
         
-        # ORAN KONTROLÜ
-        oran = abs(toplam) / iptal
+        # FARK HESAPLA - Eşitliğe yakınlık
+        fark_mutlak = abs(abs(toplam) - iptal)
         
-        # Oran 1-5 arası olmalı (orantılı)
-        if oran > 5:
-            continue  # Orantısız - iç hırsızlık değil
-        
-        # Eşitlik durumu
-        if abs(abs(toplam) - iptal) <= 1:
-            esitlik = "TAM EŞİT"
+        # Risk seviyesi - fark büyüdükçe risk azalır
+        if fark_mutlak == 0:
             risk = "ÇOK YÜKSEK"
-        elif oran <= 2:
-            esitlik = "YAKIN EŞİT"
+            esitlik = "TAM EŞİT"
+        elif fark_mutlak <= 2:
             risk = "YÜKSEK"
+            esitlik = "YAKIN EŞİT (±2)"
+        elif fark_mutlak <= 5:
+            risk = "ORTA"
+            esitlik = "YAKIN (±5)"
+        elif fark_mutlak <= 10:
+            risk = "DÜŞÜK-ORTA"
+            esitlik = f"FARK: {fark_mutlak}"
         else:
-            esitlik = "ORANTILI"
-            risk = "ORTA-YÜKSEK"
+            continue  # Fark çok büyük, iç hırsızlık değil
         
         results.append({
             'Malzeme Kodu': row.get('Malzeme Kodu', ''),
             'Malzeme Adı': row.get('Malzeme Adı', ''),
             'Ürün Grubu': row.get('Ürün Grubu', ''),
+            'Satış Fiyatı': satis_fiyati,
             'Fark Miktarı': fark,
             'Kısmi Envanter': kismi,
             'Önceki Fark': onceki,
             'TOPLAM': toplam,
-            'İptal Satır (-)': -iptal,
-            'Oran': round(oran, 2),
+            'İptal Satır': iptal,
+            'Fark (Toplam-İptal)': fark_mutlak,
             'Eşitlik Durumu': esitlik,
             'Fark Tutarı (TL)': row['Fark Tutarı'],
             'Satış Miktarı': row['Satış Miktarı'],
             'Risk Seviyesi': risk
         })
+    
+    # Risk seviyesine göre sırala
+    if results:
+        risk_order = {'ÇOK YÜKSEK': 0, 'YÜKSEK': 1, 'ORTA': 2, 'DÜŞÜK-ORTA': 3}
+        results.sort(key=lambda x: (risk_order.get(x['Risk Seviyesi'], 99), -abs(x['Fark Tutarı (TL)'])))
     
     return pd.DataFrame(results)
 
@@ -161,6 +176,36 @@ def detect_chronic_products(df):
             })
     
     return pd.DataFrame(results)
+
+
+def detect_chronic_fire(df):
+    """Kronik Fire - ardışık dönemlerde fire kaydı olan ürünler"""
+    results = []
+    
+    for idx, row in df.iterrows():
+        onceki_fire = row.get('Önceki Fire Miktarı', 0) or 0
+        bu_fire = row['Fire Miktarı']
+        
+        # Her iki dönemde de fire varsa (negatif = fire girişi)
+        if onceki_fire != 0 and bu_fire != 0:
+            results.append({
+                'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+                'Malzeme Adı': row.get('Malzeme Adı', ''),
+                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Bu Dönem Fire': bu_fire,
+                'Bu Dönem Fire Tutarı (TL)': row['Fire Tutarı'],
+                'Önceki Dönem Fire': onceki_fire,
+                'Önceki Fire Tutarı (TL)': row.get('Önceki Fire Tutarı', 0),
+                'Toplam Fire Tutarı': row['Fire Tutarı'] + row.get('Önceki Fire Tutarı', 0),
+                'Satış Miktarı': row['Satış Miktarı']
+            })
+    
+    # Fire tutarına göre yüksekten düşüğe sırala
+    result_df = pd.DataFrame(results)
+    if len(result_df) > 0:
+        result_df = result_df.sort_values('Toplam Fire Tutarı', ascending=True)  # En negatif en üstte
+    
+    return result_df
 
 
 def detect_fire_manipulation(df):
@@ -249,6 +294,52 @@ def detect_external_theft(df):
     return pd.DataFrame(results)
 
 
+def detect_cigarette_shortage(df):
+    """
+    SİGARA AÇIĞI - ÇOK ÖNEMLİ HIRSIZLIK BELİRTİSİ
+    Mal Grubu = Sigara
+    Formül: Fark + Kısmi Envanter Miktarı - İptal Satır Miktarı
+    Negatifse → HIRSIZLIK
+    """
+    results = []
+    
+    # Sigara mal gruplarını bul (case insensitive)
+    sigara_keywords = ['sigara', 'sıgara', 'cigarette', 'tütün']
+    
+    for idx, row in df.iterrows():
+        urun_grubu = str(row.get('Ürün Grubu', '')).lower()
+        mal_grubu = str(row.get('Ana Grup', '')).lower()
+        
+        is_sigara = any(kw in urun_grubu or kw in mal_grubu for kw in sigara_keywords)
+        
+        if is_sigara:
+            fark = row['Fark Miktarı']
+            kismi = row['Kısmi Envanter Miktarı']
+            iptal = row['İptal Satır Miktarı']
+            
+            # Net açık = Fark + Kısmi - İptal
+            net_acik = fark + kismi - iptal
+            
+            if net_acik < 0:  # Açık varsa
+                results.append({
+                    'Malzeme Kodu': row.get('Malzeme Kodu', ''),
+                    'Malzeme Adı': row.get('Malzeme Adı', ''),
+                    'Fark Miktarı': fark,
+                    'Kısmi Envanter': kismi,
+                    'İptal Satır': iptal,
+                    'NET AÇIK': net_acik,
+                    'Fark Tutarı (TL)': row['Fark Tutarı'],
+                    'Satış Miktarı': row['Satış Miktarı'],
+                    'Risk': 'YÜKSEK - SİGARA HIRSIZLIĞI'
+                })
+    
+    result_df = pd.DataFrame(results)
+    if len(result_df) > 0:
+        result_df = result_df.sort_values('NET AÇIK', ascending=True)
+    
+    return result_df
+
+
 def calculate_store_risk(df, internal_df, chronic_df):
     """Mağaza risk seviyesi hesapla"""
     toplam_satis = df['Satış Tutarı'].sum()
@@ -268,35 +359,40 @@ def calculate_store_risk(df, internal_df, chronic_df):
 
 
 def create_top_20_risky(df, internal_codes, chronic_codes):
-    """En riskli 20 ürün"""
+    """En riskli 20 ürün - Fire Tutarı dahil"""
     
     risky_df = df[df['NET_ENVANTER_ETKİ_TUTARI'] < 0].copy()
     
     if len(risky_df) == 0:
         return pd.DataFrame(columns=['Sıra', 'Malzeme Kodu', 'Malzeme Adı', 'Ürün Grubu', 
                                      'Fark Miktarı', 'Kısmi Env.', 'Önceki Fark', 'TOPLAM',
-                                     'İptal Satır', 'Fark Tutarı (TL)', 'Risk Türü', 'Gerekçe', 'Önerilen Aksiyon'])
+                                     'İptal Satır', 'Fire Miktarı', 'Fire Tutarı', 'Fark Tutarı (TL)', 
+                                     'Risk Türü', 'Gerekçe', 'Önerilen Aksiyon'])
     
     def classify(row):
         kod = str(row.get('Malzeme Kodu', ''))
         toplam = row['TOPLAM_MIKTAR']
         iptal = row['İptal Satır Miktarı']
+        fire = row['Fire Miktarı']
         
         if kod in internal_codes:
-            return "İÇ HIRSIZLIK", f"Matematik eşitliği: Toplam ({toplam}) ≈ -İptal ({iptal}). %90+ İç Hırsızlık"
+            return "İÇ HIRSIZLIK", f"Matematik eşitliği: Toplam ({toplam}) ≈ -İptal ({iptal}). Satış Fiyatı ≥100TL"
         elif kod in chronic_codes:
             return "KRONİK AÇIK", f"Önceki envanterde de {row['Önceki Fark Miktarı']} adet açık. Kronik sorun"
-        elif row['Fark Miktarı'] < 0 and row['Fire Miktarı'] == 0:
-            return "DIŞ HIRSIZLIK / SAYIM HATASI", "Açık miktarı yüksek, fire kaydı yok"
+        elif abs(fire) > 0 and row['Fark Miktarı'] < 0:
+            return "OPERASYONEL KAYIP", f"Fire kaydı: {fire} adet. Fire ile birlikte açık"
+        elif row['Fark Miktarı'] < 0 and fire == 0:
+            return "DIŞ HIRSIZLIK / SAYIM HATASI", "Açık var, fire kaydı yok"
         else:
-            return "OPERASYONEL KAYIP", "Fire kaydı mevcut"
+            return "DİĞER", "Detaylı inceleme gerekli"
     
     def get_action(risk_type):
         actions = {
             "İÇ HIRSIZLIK": "Kasa kamera incelemesi, Personel görüşmesi, İptal yetkisi kısıtlama",
             "KRONİK AÇIK": "Raf yerleşimi kontrolü, Sayım eğitimi, Stok takip sıkılaştırma",
             "DIŞ HIRSIZLIK / SAYIM HATASI": "Sayım kontrolü, Depo-raf eşleşmesi, Kod kontrolü",
-            "OPERASYONEL KAYIP": "Fire kayıt disiplini, Operasyonel süreç gözden geçirme"
+            "OPERASYONEL KAYIP": "Fire kayıt disiplini, Son kullanma tarihi takibi",
+            "DİĞER": "Detaylı inceleme"
         }
         return actions.get(risk_type, "Detaylı inceleme")
     
@@ -316,6 +412,8 @@ def create_top_20_risky(df, internal_codes, chronic_codes):
         'Önceki Fark': risky_df['Önceki Fark Miktarı'],
         'TOPLAM': risky_df['TOPLAM_MIKTAR'],
         'İptal Satır': risky_df['İptal Satır Miktarı'],
+        'Fire Miktarı': risky_df['Fire Miktarı'],
+        'Fire Tutarı': risky_df['Fire Tutarı'],
         'Fark Tutarı (TL)': risky_df['Fark Tutarı'],
         'Risk Türü': risky_df['Risk Türü'],
         'Gerekçe': risky_df['Gerekçe'],
@@ -325,8 +423,8 @@ def create_top_20_risky(df, internal_codes, chronic_codes):
     return result
 
 
-def create_excel_report(df, internal_df, chronic_df, external_df, similar_df, fire_df, top20_df, magaza_kodu, magaza_adi, params):
-    """Excel raporu oluştur - SENİN FORMATINDA"""
+def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_df, external_df, similar_df, fire_df, top20_df, magaza_kodu, magaza_adi, params):
+    """Excel raporu oluştur - TÜM ANALİZLER DAHİL"""
     
     wb = Workbook()
     
@@ -357,24 +455,22 @@ def create_excel_report(df, internal_df, chronic_df, external_df, similar_df, fi
     ws['B4'] = params.get('donem', '')
     ws['A5'] = "Envanter Tarihi:"
     ws['B5'] = params.get('tarih', '')
-    ws['A6'] = "Başlangıç Tarihi:"
-    ws['B6'] = params.get('baslangic', '')
     
-    ws['A8'] = "GENEL DEĞERLER"
-    ws['A8'].font = subtitle_font
+    ws['A7'] = "GENEL DEĞERLER"
+    ws['A7'].font = subtitle_font
     
     acik_veren = len(df[df['Fark Miktarı'] < 0])
     fazla_veren = len(df[df['Fark Miktarı'] > 0])
     
-    ws['A9'] = "Toplam Ürün Sayısı:"
-    ws['B9'] = len(df)
-    ws['A10'] = "Açık Veren Ürün:"
-    ws['B10'] = acik_veren
-    ws['A11'] = "Fazla Veren Ürün:"
-    ws['B11'] = fazla_veren
+    ws['A8'] = "Toplam Ürün Sayısı:"
+    ws['B8'] = len(df)
+    ws['A9'] = "Açık Veren Ürün:"
+    ws['B9'] = acik_veren
+    ws['A10'] = "Fazla Veren Ürün:"
+    ws['B10'] = fazla_veren
     
-    ws['A13'] = "TUTARLAR"
-    ws['A13'].font = subtitle_font
+    ws['A12'] = "TUTARLAR"
+    ws['A12'].font = subtitle_font
     
     toplam_satis = df['Satış Tutarı'].sum()
     net_fark = df['Fark Tutarı'].sum()
@@ -382,48 +478,58 @@ def create_excel_report(df, internal_df, chronic_df, external_df, similar_df, fi
     toplam_iptal = df['İptal Satır Tutarı'].sum()
     fire_tutari = df['Fire Tutarı'].sum()
     
-    ws['A14'] = "Toplam Satış Hasılatı:"
-    ws['B14'] = f"{toplam_satis:,.2f} TL"
-    ws['A15'] = "Net Fark Tutarı:"
-    ws['B15'] = f"{net_fark:,.2f} TL"
-    ws['A16'] = "Toplam Açık Tutarı:"
-    ws['B16'] = f"{toplam_acik:,.2f} TL"
-    ws['A17'] = "Toplam İptal Satır Tutarı:"
-    ws['B17'] = f"{toplam_iptal:,.2f} TL"
-    ws['A18'] = "Fire Tutarı:"
-    ws['B18'] = f"{fire_tutari:,.2f} TL"
+    ws['A13'] = "Toplam Satış Hasılatı:"
+    ws['B13'] = f"{toplam_satis:,.2f} TL"
+    ws['A14'] = "Net Fark Tutarı:"
+    ws['B14'] = f"{net_fark:,.2f} TL"
+    ws['A15'] = "Toplam Açık Tutarı:"
+    ws['B15'] = f"{toplam_acik:,.2f} TL"
+    ws['A16'] = "Toplam İptal Satır Tutarı:"
+    ws['B16'] = f"{toplam_iptal:,.2f} TL"
+    ws['A17'] = "Fire Tutarı:"
+    ws['B17'] = f"{fire_tutari:,.2f} TL"
     
-    ws['A20'] = "ENVANTER DİSİPLİNİ"
-    ws['A20'].font = subtitle_font
+    ws['A19'] = "ENVANTER DİSİPLİNİ"
+    ws['A19'].font = subtitle_font
     
     acik_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
-    iptal_oran = toplam_iptal / toplam_satis * 100 if toplam_satis > 0 else 0
     
-    ws['A21'] = "Açık/Satış Oranı:"
-    ws['B21'] = f"%{acik_oran:.2f}"
-    ws['A22'] = "İptal/Satış Oranı:"
-    ws['B22'] = f"%{iptal_oran:.2f}"
+    ws['A20'] = "Açık/Satış Oranı:"
+    ws['B20'] = f"%{acik_oran:.2f}"
     
     risk_seviyesi, _ = calculate_store_risk(df, internal_df, chronic_df)
-    ws['A23'] = "DEĞERLENDİRME:"
-    ws['B23'] = risk_seviyesi
-    ws['B23'].fill = risk_fills.get(risk_seviyesi, PatternFill())
-    ws['B23'].font = Font(bold=True)
+    ws['A21'] = "DEĞERLENDİRME:"
+    ws['B21'] = risk_seviyesi
+    ws['B21'].fill = risk_fills.get(risk_seviyesi, PatternFill())
+    ws['B21'].font = Font(bold=True)
     
-    ws['A25'] = "RİSK DAĞILIMI"
-    ws['A25'].font = subtitle_font
+    ws['A23'] = "RİSK DAĞILIMI"
+    ws['A23'].font = subtitle_font
     
     ic_tutar = internal_df['Fark Tutarı (TL)'].sum() if len(internal_df) > 0 else 0
     
-    ws['A26'] = "İç Hırsızlık Riski (Matematik Eşitliği):"
-    ws['B26'] = f"{len(internal_df)} ürün ({ic_tutar:,.2f} TL)"
-    ws['A27'] = "Kronik Sorunlu Ürün:"
-    ws['B27'] = f"{len(chronic_df)} ürün"
-    ws['A28'] = "Dış Hırsızlık Şüphesi:"
-    ws['B28'] = f"{len(external_df)} ürün"
+    ws['A24'] = "İç Hırsızlık (≥100TL ürünler):"
+    ws['B24'] = f"{len(internal_df)} ürün ({ic_tutar:,.2f} TL)"
+    ws['A25'] = "Kronik Açık:"
+    ws['B25'] = f"{len(chronic_df)} ürün"
+    ws['A26'] = "Kronik Fire:"
+    ws['B26'] = f"{len(chronic_fire_df)} ürün"
+    ws['A27'] = "Dış Hırsızlık Şüphesi:"
+    ws['B27'] = f"{len(external_df)} ürün"
+    
+    # SİGARA AÇIĞI - ÖNEMLİ
+    ws['A29'] = "🚬 SİGARA AÇIĞI:"
+    ws['A29'].font = Font(bold=True, color='FF0000')
+    ws['B29'] = f"{len(cigarette_df)} ürün"
+    if len(cigarette_df) > 0:
+        ws['B29'].fill = PatternFill('solid', fgColor='FF4444')
+        ws['B29'].font = Font(bold=True, color='FFFFFF')
+        ws['C29'] = "⚠️ HIRSIZLIK BELİRTİSİ!"
+        ws['C29'].font = Font(bold=True, color='FF0000')
     
     ws.column_dimensions['A'].width = 40
     ws.column_dimensions['B'].width = 30
+    ws.column_dimensions['C'].width = 25
     
     # ===== EN RİSKLİ 20 ÜRÜN =====
     ws2 = wb.create_sheet("EN RİSKLİ 20 ÜRÜN")
@@ -441,8 +547,8 @@ def create_excel_report(df, internal_df, chronic_df, external_df, similar_df, fi
                 cell = ws2.cell(row=r_idx+2, column=c_idx, value=val)
                 cell.border = border
     
-    # ===== KRONİK ÜRÜNLER =====
-    ws3 = wb.create_sheet("KRONİK ÜRÜNLER")
+    # ===== KRONİK AÇIK =====
+    ws3 = wb.create_sheet("KRONİK AÇIK")
     
     if len(chronic_df) > 0:
         headers = list(chronic_df.columns)
@@ -452,25 +558,65 @@ def create_excel_report(df, internal_df, chronic_df, external_df, similar_df, fi
             cell.fill = header_fill
             cell.border = border
         
-        for r_idx, row in chronic_df.head(30).iterrows():
+        for r_idx, row in chronic_df.head(50).iterrows():
             for c_idx, val in enumerate(row.values, 1):
                 cell = ws3.cell(row=r_idx+2, column=c_idx, value=val)
+                cell.border = border
+    
+    # ===== KRONİK FİRE =====
+    ws_fire = wb.create_sheet("KRONİK FİRE")
+    
+    if len(chronic_fire_df) > 0:
+        headers = list(chronic_fire_df.columns)
+        for col, h in enumerate(headers, 1):
+            cell = ws_fire.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = border
+        
+        for r_idx, row in chronic_fire_df.head(50).iterrows():
+            for c_idx, val in enumerate(row.values, 1):
+                cell = ws_fire.cell(row=r_idx+2, column=c_idx, value=val)
+                cell.border = border
+    
+    # ===== SİGARA AÇIĞI =====
+    ws_cig = wb.create_sheet("SİGARA AÇIĞI")
+    
+    ws_cig['A1'] = "⚠️ SİGARA AÇIĞI - YÜKSEK RİSK"
+    ws_cig['A1'].font = Font(bold=True, size=14, color='FF0000')
+    ws_cig['A2'] = "Sigarada açık = HIRSIZLIK BELİRTİSİ"
+    
+    if len(cigarette_df) > 0:
+        headers = list(cigarette_df.columns)
+        for col, h in enumerate(headers, 1):
+            cell = ws_cig.cell(row=4, column=col, value=h)
+            cell.font = header_font
+            cell.fill = PatternFill('solid', fgColor='FF4444')
+            cell.border = border
+        
+        for r_idx, row in cigarette_df.iterrows():
+            for c_idx, val in enumerate(row.values, 1):
+                cell = ws_cig.cell(row=r_idx+5, column=c_idx, value=val)
                 cell.border = border
     
     # ===== İÇ HIRSIZLIK DETAY =====
     ws4 = wb.create_sheet("İÇ HIRSIZLIK DETAY")
     
+    ws4['A1'] = "İç Hırsızlık Analizi (Satış Fiyatı ≥ 100 TL)"
+    ws4['A1'].font = title_font
+    ws4['A2'] = "Fark büyüdükçe risk AZALIR, eşitse EN YÜKSEK"
+    
     if len(internal_df) > 0:
         headers = list(internal_df.columns)
         for col, h in enumerate(headers, 1):
-            cell = ws4.cell(row=1, column=col, value=h)
+            cell = ws4.cell(row=4, column=col, value=h)
             cell.font = header_font
             cell.fill = header_fill
             cell.border = border
         
         for r_idx, row in internal_df.head(50).iterrows():
             for c_idx, val in enumerate(row.values, 1):
-                cell = ws4.cell(row=r_idx+2, column=c_idx, value=val)
+                cell = ws4.cell(row=r_idx+5, column=c_idx, value=val)
                 cell.border = border
     
     output = BytesIO()
@@ -482,8 +628,29 @@ def create_excel_report(df, internal_df, chronic_df, external_df, similar_df, fi
 # ===== ANA UYGULAMA =====
 if uploaded_file is not None:
     try:
-        df_raw = pd.read_excel(uploaded_file)
-        st.success(f"✅ Dosya yüklendi! {len(df_raw)} satır, {len(df_raw.columns)} sütun")
+        # Önce sheet isimlerini kontrol et
+        xl = pd.ExcelFile(uploaded_file)
+        sheet_names = xl.sheet_names
+        
+        # En çok satırı olan veya 'Sayfa1' sheet'ini bul
+        best_sheet = None
+        max_rows = 0
+        
+        for sheet in sheet_names:
+            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
+            # Sütun sayısı 20'den fazlaysa muhtemelen veri sheet'i
+            if len(temp_df.columns) > 20:
+                full_df = pd.read_excel(uploaded_file, sheet_name=sheet)
+                if len(full_df) > max_rows:
+                    max_rows = len(full_df)
+                    best_sheet = sheet
+        
+        # Eğer uygun sheet bulunamadıysa ilk sheet'i kullan
+        if best_sheet is None:
+            best_sheet = sheet_names[0]
+        
+        df_raw = pd.read_excel(uploaded_file, sheet_name=best_sheet)
+        st.success(f"✅ Dosya yüklendi! {len(df_raw)} satır, {len(df_raw.columns)} sütun (Sheet: {best_sheet})")
         
         with st.expander("📋 Yüklenen Sütunlar"):
             st.write(df_raw.columns.tolist())
@@ -521,9 +688,11 @@ if uploaded_file is not None:
         # Analizler
         internal_df = detect_internal_theft(df_display)
         chronic_df = detect_chronic_products(df_display)
+        chronic_fire_df = detect_chronic_fire(df_display)
         external_df = detect_external_theft(df_display)
         similar_df = find_similar_products(df_display)
         fire_df = detect_fire_manipulation(df_display)
+        cigarette_df = detect_cigarette_shortage(df_display)
         
         internal_codes = set(internal_df['Malzeme Kodu'].astype(str).tolist()) if len(internal_df) > 0 else set()
         chronic_codes = set(chronic_df['Malzeme Kodu'].astype(str).tolist()) if len(chronic_df) > 0 else set()
@@ -534,7 +703,7 @@ if uploaded_file is not None:
         
         st.markdown("---")
         
-        # Metrikler
+        # Metrikler - Üst Satır
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -549,22 +718,30 @@ if uploaded_file is not None:
             oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
             st.metric("📊 Açık/Satış", f"%{oran:.2f}")
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Metrikler - Alt Satır
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("🔴 İç Hırsızlık", f"{len(internal_df)} ürün")
         with col2:
             st.metric("🟠 Kronik Açık", f"{len(chronic_df)} ürün")
         with col3:
-            st.metric("🟡 Dış Hırsızlık Şüphesi", f"{len(external_df)} ürün")
+            st.metric("🔥 Kronik Fire", f"{len(chronic_fire_df)} ürün")
         with col4:
-            st.metric("🟣 Fire Manipülasyonu", f"{len(fire_df)} ürün")
+            st.metric("🟣 Fire Manip.", f"{len(fire_df)} ürün")
+        with col5:
+            # SİGARA AÇIĞI - ÇOK ÖNEMLİ
+            sigara_count = len(cigarette_df)
+            if sigara_count > 0:
+                st.metric("🚬 SİGARA AÇIĞI", f"{sigara_count} ürün", delta="HIRSIZLIK!", delta_color="inverse")
+            else:
+                st.metric("🚬 Sigara Açığı", "0 ürün")
         
         st.markdown("---")
         
         # Sekmeler
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "📊 Özet", "🚨 En Riskli 20", "🔒 İç Hırsızlık", 
-            "🔄 Kronik", "🟡 Dış Hırsızlık", "📥 İndir"
+            "🔄 Kronik Açık", "🔥 Kronik Fire", "🚬 Sigara", "🟡 Dış Hırsızlık", "📥 İndir"
         ])
         
         with tab1:
@@ -589,13 +766,17 @@ if uploaded_file is not None:
             with col2:
                 st.markdown("#### Risk Dağılımı")
                 risk_data = {
-                    'Risk Türü': ['İç Hırsızlık', 'Kronik Açık', 'Dış Hırsızlık Şüphesi', 'Fire Manipülasyonu'],
-                    'Sayı': [len(internal_df), len(chronic_df), len(external_df), len(fire_df)]
+                    'Risk Türü': ['İç Hırsızlık (≥100TL)', 'Kronik Açık', 'Kronik Fire', 'Sigara Açığı', 'Fire Manipülasyonu'],
+                    'Sayı': [len(internal_df), len(chronic_df), len(chronic_fire_df), len(cigarette_df), len(fire_df)]
                 }
                 st.dataframe(pd.DataFrame(risk_data), hide_index=True, use_container_width=True)
+                
+                if len(cigarette_df) > 0:
+                    st.error(f"⚠️ **SİGARA AÇIĞI TESPİT EDİLDİ!** {len(cigarette_df)} üründe açık var - HIRSIZLIK BELİRTİSİ")
         
         with tab2:
             st.subheader("🚨 En Riskli 20 Ürün")
+            st.markdown("*Fire Tutarı dahil - Operasyonel kayıpları görebilirsiniz*")
             if len(top20_df) > 0:
                 st.dataframe(top20_df, use_container_width=True, hide_index=True)
             else:
@@ -604,9 +785,12 @@ if uploaded_file is not None:
         with tab3:
             st.subheader("🔒 İç Hırsızlık Detayı")
             st.markdown("""
-            **Kural:** `|Fark + Kısmi + Önceki| ≈ İptal Satır` VE Oran 1-5 arası
+            **Kurallar:**
+            - Satış Fiyatı ≥ **100 TL** olan ürünler
+            - `|Fark + Kısmi + Önceki| ≈ İptal Satır`
+            - Fark büyüdükçe risk **AZALIR**, eşitse **EN YÜKSEK**
             
-            ⚠️ 1 iptal, 30 açık = Orantısız = İç hırsızlık DEĞİL
+            ⚠️ 1 iptal, 30 açık = Fark çok büyük = İç hırsızlık **DEĞİL**
             """)
             if len(internal_df) > 0:
                 st.dataframe(internal_df, use_container_width=True, hide_index=True)
@@ -615,12 +799,36 @@ if uploaded_file is not None:
         
         with tab4:
             st.subheader("🔄 Kronik Açık Veren Ürünler")
+            st.markdown("**Kural:** Hem bu dönem hem önceki dönemde Fark < 0")
             if len(chronic_df) > 0:
                 st.dataframe(chronic_df, use_container_width=True, hide_index=True)
             else:
                 st.success("Kronik açık veren ürün yok!")
         
         with tab5:
+            st.subheader("🔥 Kronik Fire")
+            st.markdown("**Kural:** Hem bu dönem hem önceki dönemde Fire kaydı var (Yüksekten düşüğe sıralı)")
+            if len(chronic_fire_df) > 0:
+                st.dataframe(chronic_fire_df, use_container_width=True, hide_index=True)
+            else:
+                st.success("Kronik fire kaydı yok!")
+        
+        with tab6:
+            st.subheader("🚬 Sigara Açığı - YÜKSEK RİSK")
+            st.markdown("""
+            **Kural:** Mal Grubu = Sigara
+            
+            **Formül:** `Fark + Kısmi Envanter - İptal Satır < 0`
+            
+            ⚠️ **Sigarada açık = HIRSIZLIK BELİRTİSİ**
+            """)
+            if len(cigarette_df) > 0:
+                st.error(f"🚨 **{len(cigarette_df)} üründe sigara açığı tespit edildi!**")
+                st.dataframe(cigarette_df, use_container_width=True, hide_index=True)
+            else:
+                st.success("Sigara açığı yok!")
+        
+        with tab7:
             st.subheader("🟡 Dış Hırsızlık / Sayım Hatası Şüphesi")
             st.markdown("**Kural:** Açık var ama Fire ve İptal Satır yok")
             if len(external_df) > 0:
@@ -628,12 +836,13 @@ if uploaded_file is not None:
             else:
                 st.success("Dış hırsızlık şüphesi yok!")
         
-        with tab6:
+        with tab8:
             st.subheader("📥 Excel Raporu İndir")
             
+            # Tek mağaza raporu
             excel_output = create_excel_report(
-                df_display, internal_df, chronic_df, external_df, 
-                similar_df, fire_df, top20_df,
+                df_display, internal_df, chronic_df, chronic_fire_df, cigarette_df,
+                external_df, similar_df, fire_df, top20_df,
                 selected, magaza_adi, params
             )
             
@@ -643,6 +852,48 @@ if uploaded_file is not None:
                 file_name=f"{selected}_Envanter_Risk_Raporu.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+            
+            # Çoklu mağaza - ZIP indirme
+            if len(magazalar) > 1:
+                st.markdown("---")
+                st.markdown("### 📦 Tüm Mağazalar (ZIP)")
+                
+                if st.button("🗜️ Tüm Mağaza Raporlarını Hazırla"):
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for mag in magazalar:
+                            df_mag = df[df['Mağaza Kodu'] == mag]
+                            mag_adi = df_mag['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_mag.columns and len(df_mag) > 0 else ''
+                            
+                            # Her mağaza için analiz
+                            int_df = detect_internal_theft(df_mag)
+                            chr_df = detect_chronic_products(df_mag)
+                            chr_fire_df = detect_chronic_fire(df_mag)
+                            cig_df = detect_cigarette_shortage(df_mag)
+                            ext_df = detect_external_theft(df_mag)
+                            sim_df = find_similar_products(df_mag)
+                            fir_df = detect_fire_manipulation(df_mag)
+                            
+                            int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
+                            chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
+                            
+                            t20_df = create_top_20_risky(df_mag, int_codes, chr_codes)
+                            
+                            excel_data = create_excel_report(
+                                df_mag, int_df, chr_df, chr_fire_df, cig_df,
+                                ext_df, sim_df, fir_df, t20_df,
+                                mag, mag_adi, params
+                            )
+                            
+                            zf.writestr(f"{mag}_Envanter_Risk_Raporu.xlsx", excel_data.getvalue())
+                    
+                    zip_buffer.seek(0)
+                    st.download_button(
+                        label=f"📥 {len(magazalar)} Mağaza Raporu İndir (ZIP)",
+                        data=zip_buffer,
+                        file_name="Tum_Magazalar_Envanter_Raporu.zip",
+                        mime="application/zip"
+                    )
     
     except Exception as e:
         st.error(f"Hata: {str(e)}")
