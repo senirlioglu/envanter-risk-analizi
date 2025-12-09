@@ -755,13 +755,12 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
     ws = wb.active
     ws.title = "ÖZET"
     
-    ws['A1'] = f"MAĞAZA {magaza_kodu}"
+    ws['A1'] = f"MAĞAZA: {magaza_kodu} - {magaza_adi}"
     ws['A1'].font = title_font
-    ws['A2'] = magaza_adi
-    ws['A3'] = f"Dönem: {params.get('donem', '')} | Tarih: {params.get('tarih', '')}"
+    ws['A2'] = f"Dönem: {params.get('donem', '')} | Tarih: {params.get('tarih', '')}"
     
-    ws['A5'] = "GENEL METRIKLER"
-    ws['A5'].font = subtitle_font
+    ws['A4'] = "GENEL METRIKLER"
+    ws['A4'].font = subtitle_font
     
     toplam_satis = df['Satış Tutarı'].sum()
     net_fark = df['Fark Tutarı'].sum()
@@ -778,12 +777,12 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
         ('Açık/Satış Oranı', f"%{acik_oran:.2f}"),
     ]
     
-    for i, (label, value) in enumerate(metrics, start=6):
+    for i, (label, value) in enumerate(metrics, start=5):
         ws[f'A{i}'] = label
         ws[f'B{i}'] = value
     
-    ws['A13'] = "RİSK DAĞILIMI"
-    ws['A13'].font = subtitle_font
+    ws['A12'] = "RİSK DAĞILIMI"
+    ws['A12'].font = subtitle_font
     
     risks = [
         ('İç Hırsızlık (≥100TL)', len(internal_df)),
@@ -793,17 +792,17 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
         ('Fire Manipülasyonu', len(fire_manip_df)),
     ]
     
-    for i, (label, value) in enumerate(risks, start=14):
+    for i, (label, value) in enumerate(risks, start=13):
         ws[f'A{i}'] = label
         ws[f'B{i}'] = value
         if 'Sigara' in label and value > 0:
             ws[f'B{i}'].fill = PatternFill('solid', fgColor='FF4444')
             ws[f'B{i}'].font = Font(bold=True, color='FFFFFF')
     
-    ws['A20'] = "YÖNETİCİ ÖZETİ"
-    ws['A20'].font = subtitle_font
+    ws['A19'] = "YÖNETİCİ ÖZETİ"
+    ws['A19'].font = subtitle_font
     
-    for i, comment in enumerate(exec_comments[:10], start=21):
+    for i, comment in enumerate(exec_comments[:10], start=20):
         ws[f'A{i}'] = comment
     
     auto_adjust_column_width(ws)
@@ -968,11 +967,15 @@ if uploaded_file is not None:
         # Mağaza bilgisi
         if 'Mağaza Kodu' in df.columns:
             magazalar = df['Mağaza Kodu'].dropna().unique().tolist()
+            # Mağaza kod-isim eşleştirmesi
+            magaza_isimleri = {}
+            for mag in magazalar:
+                isim = df[df['Mağaza Kodu'] == mag]['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df.columns else ''
+                magaza_isimleri[mag] = f"{mag} - {isim}" if isim else str(mag)
         else:
             magazalar = ['MAGAZA']
             df['Mağaza Kodu'] = 'MAGAZA'
-        
-        magaza_adi = df['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df.columns and len(df) > 0 else ''
+            magaza_isimleri = {'MAGAZA': 'MAGAZA'}
         
         params = {
             'donem': str(df['Envanter Dönemi'].iloc[0]) if 'Envanter Dönemi' in df.columns else '',
@@ -981,11 +984,17 @@ if uploaded_file is not None:
         
         # Mağaza seçimi
         if len(magazalar) > 1:
-            selected = st.selectbox("🏪 Mağaza Seçin", magazalar)
+            # Kod + isim listesi oluştur
+            magaza_options = [magaza_isimleri[m] for m in magazalar]
+            selected_option = st.selectbox("🏪 Mağaza Seçin", magaza_options)
+            # Seçilen option'dan kodu çıkar
+            selected = selected_option.split(" - ")[0]
             df_display = df[df['Mağaza Kodu'] == selected].copy()
+            magaza_adi = df_display['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_display.columns and len(df_display) > 0 else ''
         else:
             selected = magazalar[0]
             df_display = df.copy()
+            magaza_adi = df['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df.columns and len(df) > 0 else ''
         
         # Kasa aktivitesi kodlarını yükle
         kasa_kodlari = load_kasa_activity_codes()
