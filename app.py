@@ -1399,33 +1399,29 @@ if uploaded_file is not None:
                 with tabs[0]:
                     st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
                     
-                    # Tablo gösterimi
-                    display_cols = ['Mağaza Kodu', 'Mağaza Adı', 'BS', 'Fark', 'Günlük Fark', 'Fire', 'Günlük Fire', 'Kayıp %', 'Fire %', 'Sigara', 'Risk Puan', 'Risk']
-                    display_df = region_df[display_cols].copy()
-                    display_df['Fark'] = display_df['Fark'].apply(lambda x: f"{x:,.0f}")
-                    display_df['Günlük Fark'] = display_df['Günlük Fark'].apply(lambda x: f"{x:,.0f}")
-                    display_df['Fire'] = display_df['Fire'].apply(lambda x: f"{x:,.0f}")
-                    display_df['Günlük Fire'] = display_df['Günlük Fire'].apply(lambda x: f"{x:,.0f}")
-                    display_df['Kayıp %'] = display_df['Kayıp %'].apply(lambda x: f"%{x:.1f}")
-                    display_df['Fire %'] = display_df['Fire %'].apply(lambda x: f"%{x:.2f}")
-                    display_df['Risk Puan'] = display_df['Risk Puan'].apply(lambda x: f"{x:.0f}")
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    # Başlık satırı
+                    cols = st.columns([0.4, 0.8, 1.3, 1.2, 0.9, 0.7, 0.9, 0.7, 0.6, 0.6, 0.4, 0.5, 0.8])
+                    cols[0].markdown("**📥**")
+                    cols[1].markdown("**Kod**")
+                    cols[2].markdown("**Mağaza Adı**")
+                    cols[3].markdown("**BS**")
+                    cols[4].markdown("**Fark**")
+                    cols[5].markdown("**Günlük**")
+                    cols[6].markdown("**Fire**")
+                    cols[7].markdown("**Günlük**")
+                    cols[8].markdown("**Kayıp%**")
+                    cols[9].markdown("**Fire%**")
+                    cols[10].markdown("**🚬**")
+                    cols[11].markdown("**Risk**")
+                    cols[12].markdown("**Seviye**")
                     
-                    # İndirme butonları
                     st.markdown("---")
-                    st.markdown("##### 📥 Mağaza Raporu İndir")
                     
-                    # Mağaza seçimi
-                    magaza_secim = st.selectbox(
-                        "Mağaza Seç",
-                        options=region_df['Mağaza Kodu'].tolist(),
-                        format_func=lambda x: f"{x} - {region_df[region_df['Mağaza Kodu']==x]['Mağaza Adı'].iloc[0]}"
-                    )
-                    
-                    if magaza_secim:
-                        row = region_df[region_df['Mağaza Kodu'] == magaza_secim].iloc[0]
+                    # Veri satırları
+                    for idx, (_, row) in enumerate(region_df.iterrows()):
+                        cols = st.columns([0.4, 0.8, 1.3, 1.2, 0.9, 0.7, 0.9, 0.7, 0.6, 0.6, 0.4, 0.5, 0.8])
                         
-                        # Rapor oluştur
+                        # İndirme butonu için rapor oluştur
                         report_wb = Workbook()
                         ws = report_wb.active
                         ws.title = "Mağaza Raporu"
@@ -1458,12 +1454,23 @@ if uploaded_file is not None:
                         report_wb.save(report_output)
                         report_output.seek(0)
                         
-                        st.download_button(
-                            f"📥 {magaza_secim} Raporu İndir",
-                            data=report_output.getvalue(),
-                            file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                        with cols[0]:
+                            st.download_button("📥", data=report_output.getvalue(), 
+                                file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"dl_{idx}")
+                        cols[1].write(f"{row['Mağaza Kodu']}")
+                        cols[2].write(f"{row['Mağaza Adı'][:18] if row['Mağaza Adı'] else '-'}")
+                        cols[3].write(f"{row['BS'][:12] if row['BS'] else '-'}")
+                        cols[4].write(f"{row['Fark']:,.0f}")
+                        cols[5].write(f"{row['Günlük Fark']:,.0f}")
+                        cols[6].write(f"{row['Fire']:,.0f}")
+                        cols[7].write(f"{row['Günlük Fire']:,.0f}")
+                        cols[8].write(f"%{row['Kayıp %']:.1f}")
+                        cols[9].write(f"%{row['Fire %']:.1f}")
+                        cols[10].write(f"{row['Sigara']}" if row['Sigara'] > 0 else "-")
+                        cols[11].write(f"{row['Risk Puan']:.0f}")
+                        cols[12].write(row['Risk'])
                 
                 with tabs[1]:
                     st.subheader("🔴 Kritik Mağazalar")
