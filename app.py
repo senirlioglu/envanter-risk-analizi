@@ -1661,6 +1661,21 @@ if uploaded_file is not None:
             fark_oran = abs(fark) / toplam_satis * 100 if toplam_satis > 0 else 0
             fire_oran = abs(fire_tutari) / toplam_satis * 100 if toplam_satis > 0 else 0
             toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+            
+            # Gün hesabı
+            gun_sayisi = 1
+            try:
+                if 'Envanter Tarihi' in df_display.columns and 'Envanter Başlangıç Tarihi' in df_display.columns:
+                    env_tarihi = pd.to_datetime(df_display['Envanter Tarihi'].iloc[0])
+                    env_baslangic = pd.to_datetime(df_display['Envanter Başlangıç Tarihi'].iloc[0])
+                    gun_sayisi = (env_tarihi - env_baslangic).days
+                    if gun_sayisi <= 0:
+                        gun_sayisi = 1
+            except:
+                gun_sayisi = 1
+            
+            gunluk_fark = fark / gun_sayisi
+            gunluk_fire = fire_tutari / gun_sayisi
         
             # Metrikler - Üst
             col1, col2, col3, col4, col5 = st.columns(5)
@@ -1669,9 +1684,9 @@ if uploaded_file is not None:
             with col2:
                 st.metric("💰 Satış", f"{toplam_satis:,.0f} TL")
             with col3:
-                st.metric("📉 Fark", f"{fark:,.0f} TL", f"%{fark_oran:.2f}")
+                st.metric("📉 Fark", f"{fark:,.0f} TL", f"%{fark_oran:.2f} | Günlük: {gunluk_fark:,.0f}₺")
             with col4:
-                st.metric("🔥 Fire", f"{fire_tutari:,.0f} TL", f"%{fire_oran:.2f}")
+                st.metric("🔥 Fire", f"{fire_tutari:,.0f} TL", f"%{fire_oran:.2f} | Günlük: {gunluk_fire:,.0f}₺")
             with col5:
                 st.metric("📊 Toplam", f"{toplam_acik:,.0f} TL", f"%{toplam_oran:.2f}")
         
