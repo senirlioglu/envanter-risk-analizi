@@ -1421,42 +1421,37 @@ if uploaded_file is not None:
                     for idx, (_, row) in enumerate(region_df.iterrows()):
                         cols = st.columns([0.4, 0.8, 1.3, 1.2, 0.9, 0.7, 0.9, 0.7, 0.6, 0.6, 0.4, 0.5, 0.8])
                         
-                        # İndirme butonu için rapor oluştur
-                        report_wb = Workbook()
-                        ws = report_wb.active
-                        ws.title = "Mağaza Raporu"
-                        ws['A1'] = f"Mağaza: {row['Mağaza Kodu']} - {row['Mağaza Adı']}"
-                        ws['A2'] = f"BS: {row['BS']}"
-                        ws['A3'] = f"Dönem: {params.get('donem', '')}"
-                        metrics = [
-                            ("Satış", f"{row['Satış']:,.0f} TL"),
-                            ("Fark", f"{row['Fark']:,.0f} TL"),
-                            ("Günlük Fark", f"{row['Günlük Fark']:,.0f} TL"),
-                            ("Fire", f"{row['Fire']:,.0f} TL"),
-                            ("Günlük Fire", f"{row['Günlük Fire']:,.0f} TL"),
-                            ("Kayıp %", f"%{row['Kayıp %']:.2f}"),
-                            ("Fire %", f"%{row['Fire %']:.2f}"),
-                            ("Gün Sayısı", f"{row['Gün']:.0f}"),
-                            ("İç Hırsızlık", f"{row['İç Hırs.']}"),
-                            ("Kronik Açık", f"{row['Kr.Açık']}"),
-                            ("Sigara", f"{row['Sigara']}"),
-                            ("10TL Adet", f"{row['10TL Adet']:.0f}"),
-                            ("Risk Puanı", f"{row['Risk Puan']:.0f}"),
-                            ("Risk", row['Risk']),
-                            ("Risk Nedenleri", row['Risk Nedenleri']),
-                        ]
-                        for i, (label, value) in enumerate(metrics, start=5):
-                            ws[f'A{i}'] = label
-                            ws[f'B{i}'] = value
-                        ws.column_dimensions['A'].width = 20
-                        ws.column_dimensions['B'].width = 30
-                        report_output = BytesIO()
-                        report_wb.save(report_output)
-                        report_output.seek(0)
+                        # Mağaza verisini al ve tam rapor oluştur
+                        mag_kod = row['Mağaza Kodu']
+                        df_mag = df[df['Mağaza Kodu'] == mag_kod].copy()
+                        mag_adi = row['Mağaza Adı']
+                        
+                        # Analizleri yap
+                        int_df = detect_internal_theft(df_mag)
+                        chr_df = detect_chronic_products(df_mag)
+                        chr_fire_df = detect_chronic_fire(df_mag)
+                        cig_df = detect_cigarette_shortage(df_mag)
+                        ext_df = detect_external_theft(df_mag)
+                        fam_df = find_product_families(df_mag)
+                        fire_df = detect_fire_manipulation(df_mag)
+                        kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
+                        
+                        int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
+                        chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
+                        
+                        t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
+                        exec_c, grp_s = generate_executive_summary(df_mag, kasa_df, kasa_sum)
+                        
+                        # Tam rapor oluştur
+                        report_data = create_excel_report(
+                            df_mag, int_df, chr_df, chr_fire_df, cig_df,
+                            ext_df, fam_df, fire_df, kasa_df, t20_df,
+                            exec_c, grp_s, mag_kod, mag_adi, params
+                        )
                         
                         with cols[0]:
-                            st.download_button("📥", data=report_output.getvalue(), 
-                                file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx",
+                            st.download_button("📥", data=report_data, 
+                                file_name=f"{mag_kod}_Risk_Raporu.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 key=f"dl_{idx}")
                         cols[1].write(f"{row['Mağaza Kodu']}")
