@@ -405,33 +405,69 @@ def detect_fire_manipulation(df):
 
 
 def detect_cigarette_shortage(df):
-    """Sigara açığı - Fark < 0 olan sigaralar"""
-    results = []
+    """
+    Sigara açığı - Tüm sigaraların TOPLAM (Fark + Kısmi + Önceki) değerine bakılır
+    Eğer toplam < 0 ise sigara açığı var demektir
+    """
     sigara_keywords = ['sigara', 'sıgara', 'cigarette', 'tütün']
     
-    for idx, row in df.iterrows():
-        urun_grubu = str(row.get('Ürün Grubu', '')).lower()
-        ana_grup = str(row.get('Ana Grup', '')).lower()
+    # Sigara ürünlerini filtrele
+    sigara_mask = df.apply(lambda row: any(
+        kw in str(row.get('Ürün Grubu', '')).lower() or 
+        kw in str(row.get('Ana Grup', '')).lower() or
+        kw in str(row.get('Mal Grubu', '')).lower()
+        for kw in sigara_keywords
+    ), axis=1)
+    
+    sigara_df = df[sigara_mask].copy()
+    
+    if len(sigara_df) == 0:
+        return pd.DataFrame()
+    
+    # Tüm sigaraların toplamını hesapla
+    toplam_fark = sigara_df['Fark Miktarı'].fillna(0).sum()
+    toplam_kismi = sigara_df['Kısmi Envanter Miktarı'].fillna(0).sum()
+    toplam_onceki = sigara_df['Önceki Fark Miktarı'].fillna(0).sum()
+    net_toplam = toplam_fark + toplam_kismi + toplam_onceki
+    
+    # Eğer net toplam < 0 ise açık var
+    if net_toplam >= 0:
+        return pd.DataFrame()
+    
+    # Açık varsa, detay göster
+    results = []
+    for idx, row in sigara_df.iterrows():
+        fark = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+        kismi = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
+        onceki = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
+        urun_toplam = fark + kismi + onceki
         
-        is_sigara = any(kw in urun_grubu or kw in ana_grup for kw in sigara_keywords)
-        
-        if is_sigara and row['Fark Miktarı'] < 0:
-            net_acik = row['Fark Miktarı'] + row['Kısmi Envanter Miktarı'] - row['İptal Satır Miktarı']
-            
+        # Sadece 0 olmayan kayıtları göster
+        if fark != 0 or kismi != 0 or onceki != 0:
             results.append({
                 'Malzeme Kodu': row.get('Malzeme Kodu', ''),
                 'Malzeme Adı': row.get('Malzeme Adı', ''),
-                'Fark Miktarı': row['Fark Miktarı'],
-                'Kısmi Env.': row['Kısmi Envanter Miktarı'],
-                'İptal Satır': row['İptal Satır Miktarı'],
-                'NET AÇIK': net_acik,
-                'Fark Tutarı': row['Fark Tutarı'],
-                'Risk': 'YÜKSEK - SİGARA'
+                'Fark': fark,
+                'Kısmi': kismi,
+                'Önceki': onceki,
+                'Ürün Toplam': urun_toplam,
+                'Risk': 'SİGARA'
             })
     
     result_df = pd.DataFrame(results)
     if len(result_df) > 0:
-        result_df = result_df.sort_values('Fark Tutarı', ascending=True)
+        result_df = result_df.sort_values('Ürün Toplam', ascending=True)
+        # En sona toplam satırı ekle
+        toplam_row = pd.DataFrame([{
+            'Malzeme Kodu': '*** TOPLAM ***',
+            'Malzeme Adı': f'SİGARA AÇIĞI: {abs(net_toplam):.0f} adet',
+            'Fark': toplam_fark,
+            'Kısmi': toplam_kismi,
+            'Önceki': toplam_onceki,
+            'Ürün Toplam': net_toplam,
+            'Risk': '⚠️ AÇIK VAR'
+        }])
+        result_df = pd.concat([result_df, toplam_row], ignore_index=True)
     
     return result_df
 
@@ -779,13 +815,21 @@ def analyze_region(df, kasa_kodlari):
         elif len(internal_df) > 15:
             risk_puan += 10
         
-        # Sigara açığı (kritik!)
-        if len(cigarette_df) > 5:
+        # Sigara açığı (kritik!) - Toplam bazlı
+        # cigarette_df boş değilse, içindeki son satırda toplam var
+        sigara_acik = 0
+        if len(cigarette_df) > 0 and 'Ürün Toplam' in cigarette_df.columns:
+            # Son satırdaki Net Toplam değerini al (negatif)
+            son_satir = cigarette_df.iloc[-1]
+            if son_satir['Malzeme Kodu'] == '*** TOPLAM ***':
+                sigara_acik = abs(son_satir['Ürün Toplam'])
+        
+        if sigara_acik > 5:
             risk_puan += 35
-            risk_nedenler.append(f"🚬 SİGARA {len(cigarette_df)}")
-        elif len(cigarette_df) > 0:
+            risk_nedenler.append(f"🚬 SİGARA {sigara_acik:.0f}")
+        elif sigara_acik > 0:
             risk_puan += 20
-            risk_nedenler.append(f"🚬 Sigara {len(cigarette_df)}")
+            risk_nedenler.append(f"🚬 Sigara {sigara_acik:.0f}")
         
         # Kronik açık
         if len(chronic_df) > 100:
@@ -833,7 +877,7 @@ def analyze_region(df, kasa_kodlari):
             'İç Hırs.': len(internal_df),
             'Kr.Açık': len(chronic_df),
             'Kr.Fire': len(chronic_fire_df),
-            'Sigara': len(cigarette_df),
+            'Sigara': sigara_acik,
             'Fire Man.': len(fire_manip_df),
             '10TL Adet': kasa_sum['toplam_adet'],
             '10TL Tutar': kasa_sum['toplam_tutar'],
@@ -1591,8 +1635,15 @@ if uploaded_file is not None:
             with col3:
                 st.metric("🔥 Kr.Fire", f"{len(chronic_fire_df)}")
             with col4:
-                if len(cigarette_df) > 0:
-                    st.metric("🚬 SİGARA", f"{len(cigarette_df)}", delta="RİSK!", delta_color="inverse")
+                # Sigara açığı - toplam bazlı
+                sigara_acik = 0
+                if len(cigarette_df) > 0 and 'Ürün Toplam' in cigarette_df.columns:
+                    son_satir = cigarette_df.iloc[-1]
+                    if son_satir['Malzeme Kodu'] == '*** TOPLAM ***':
+                        sigara_acik = abs(son_satir['Ürün Toplam'])
+                
+                if sigara_acik > 0:
+                    st.metric("🚬 SİGARA", f"{sigara_acik:.0f}", delta="RİSK!", delta_color="inverse")
                 else:
                     st.metric("🚬 Sigara", "0")
             with col5:
