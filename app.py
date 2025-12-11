@@ -1493,9 +1493,11 @@ if uploaded_file is not None:
                             exec_c, grp_s, mag_kod, mag_adi, params
                         )
                         
+                        mag_adi_clean = mag_adi.replace(' ', '_').replace('/', '_')[:30] if mag_adi else ''
+                        
                         with cols[0]:
                             st.download_button("📥", data=report_data, 
-                                file_name=f"{mag_kod}_Risk_Raporu.xlsx",
+                                file_name=f"{mag_kod}_{mag_adi_clean}_Risk_Raporu.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 key=f"dl_{idx}")
                         cols[1].write(f"{row['Mağaza Kodu']}")
@@ -1738,11 +1740,13 @@ if uploaded_file is not None:
                     external_df, family_df, fire_manip_df, kasa_activity_df, top20_df,
                     exec_comments, group_stats, selected, magaza_adi, params
                 )
+                
+                mag_adi_clean = magaza_adi.replace(' ', '_').replace('/', '_')[:30] if magaza_adi else ''
             
                 st.download_button(
                     label=f"📥 {selected} Raporu İndir",
                     data=excel_output,
-                    file_name=f"{selected}_Risk_Raporu.xlsx",
+                    file_name=f"{selected}_{mag_adi_clean}_Risk_Raporu.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             
