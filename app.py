@@ -1453,196 +1453,195 @@ if uploaded_file is not None:
             # Kasa aktivitesi kodlarını yükle
             kasa_kodlari = load_kasa_activity_codes()
         
-        # Analizler
-        internal_df = detect_internal_theft(df_display)
-        chronic_df = detect_chronic_products(df_display)
-        chronic_fire_df = detect_chronic_fire(df_display)
-        cigarette_df = detect_cigarette_shortage(df_display)
-        external_df = detect_external_theft(df_display)
-        family_df = find_product_families(df_display)
-        fire_manip_df = detect_fire_manipulation(df_display)
-        kasa_activity_df, kasa_summary = check_kasa_activity_products(df_display, kasa_kodlari)
-        exec_comments, group_stats = generate_executive_summary(df_display, kasa_activity_df, kasa_summary)
+            # Analizler
+            internal_df = detect_internal_theft(df_display)
+            chronic_df = detect_chronic_products(df_display)
+            chronic_fire_df = detect_chronic_fire(df_display)
+            cigarette_df = detect_cigarette_shortage(df_display)
+            external_df = detect_external_theft(df_display)
+            family_df = find_product_families(df_display)
+            fire_manip_df = detect_fire_manipulation(df_display)
+            kasa_activity_df, kasa_summary = check_kasa_activity_products(df_display, kasa_kodlari)
+            exec_comments, group_stats = generate_executive_summary(df_display, kasa_activity_df, kasa_summary)
         
-        internal_codes = set(internal_df['Malzeme Kodu'].astype(str).tolist()) if len(internal_df) > 0 else set()
-        chronic_codes = set(chronic_df['Malzeme Kodu'].astype(str).tolist()) if len(chronic_df) > 0 else set()
+            internal_codes = set(internal_df['Malzeme Kodu'].astype(str).tolist()) if len(internal_df) > 0 else set()
+            chronic_codes = set(chronic_df['Malzeme Kodu'].astype(str).tolist()) if len(chronic_df) > 0 else set()
         
-        # Aile dengelenmişlerini bul
-        family_balanced_codes = set()
-        if len(family_df) > 0:
-            balanced_families = family_df[family_df['Sonuç'].str.contains('KARIŞIKLIK', na=False)]
-            # Bu ailelerdeki ürünleri bul
+            # Aile dengelenmişlerini bul
+            family_balanced_codes = set()
+            if len(family_df) > 0:
+                balanced_families = family_df[family_df['Sonuç'].str.contains('KARIŞIKLIK', na=False)]
+                # Bu ailelerdeki ürünleri bul
         
-        top20_df = create_top_20_risky(df_display, internal_codes, chronic_codes, family_balanced_codes)
+            top20_df = create_top_20_risky(df_display, internal_codes, chronic_codes, family_balanced_codes)
         
-        risk_seviyesi, risk_class = calculate_store_risk(df_display, internal_df, chronic_df, cigarette_df)
+            risk_seviyesi, risk_class = calculate_store_risk(df_display, internal_df, chronic_df, cigarette_df)
         
-        st.markdown("---")
+            st.markdown("---")
         
-        # Metrikler - Üst
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.markdown(f'<div class="{risk_class}"><b>RİSK</b><br/><h2>{risk_seviyesi}</h2></div>', unsafe_allow_html=True)
-        with col2:
-            st.metric("💰 Satış", f"{df_display['Satış Tutarı'].sum():,.0f} TL")
-        with col3:
-            st.metric("📉 Fark", f"{df_display['Fark Tutarı'].sum():,.0f} TL")
-        with col4:
-            toplam_satis = df_display['Satış Tutarı'].sum()
-            toplam_acik = df_display[df_display['Fark Tutarı'] < 0]['Fark Tutarı'].sum()
-            oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
-            st.metric("📊 Oran", f"%{oran:.2f}")
+            # Metrikler - Üst
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.markdown(f'<div class="{risk_class}"><b>RİSK</b><br/><h2>{risk_seviyesi}</h2></div>', unsafe_allow_html=True)
+            with col2:
+                st.metric("💰 Satış", f"{df_display['Satış Tutarı'].sum():,.0f} TL")
+            with col3:
+                st.metric("📉 Fark", f"{df_display['Fark Tutarı'].sum():,.0f} TL")
+            with col4:
+                toplam_satis = df_display['Satış Tutarı'].sum()
+                toplam_acik = df_display[df_display['Fark Tutarı'] < 0]['Fark Tutarı'].sum()
+                oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+                st.metric("📊 Oran", f"%{oran:.2f}")
         
-        # Metrikler - Alt
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric("🔒 İç Hırs.", f"{len(internal_df)}")
-        with col2:
-            st.metric("🔄 Kr.Açık", f"{len(chronic_df)}")
-        with col3:
-            st.metric("🔥 Kr.Fire", f"{len(chronic_fire_df)}")
-        with col4:
-            if len(cigarette_df) > 0:
-                st.metric("🚬 SİGARA", f"{len(cigarette_df)}", delta="RİSK!", delta_color="inverse")
-            else:
-                st.metric("🚬 Sigara", "0")
-        with col5:
-            if kasa_summary['toplam_adet'] > 0:
-                st.metric("💰 10 TL", f"+{kasa_summary['toplam_adet']:.0f} / {kasa_summary['toplam_tutar']:,.0f}₺", delta="FAZLA!", delta_color="inverse")
-            elif kasa_summary['toplam_adet'] < 0:
-                st.metric("💰 10 TL", f"{kasa_summary['toplam_adet']:.0f} / {kasa_summary['toplam_tutar']:,.0f}₺", delta="AÇIK", delta_color="normal")
-            else:
-                st.metric("💰 10 TL", "0")
-        
-        # Yönetici Özeti
-        if exec_comments:
-            with st.expander("📋 Yönetici Özeti", expanded=True):
-                for comment in exec_comments[:5]:
-                    st.markdown(comment)
-        
-        st.markdown("---")
-        
-        # Sekmeler
-        tabs = st.tabs(["🚨 Riskli 20", "🔒 İç Hırs.", "🔄 Kr.Açık", "🔥 Kr.Fire", "🔥 Fire Man.", "🚬 Sigara", "💰 10 TL Akt.", "📥 İndir"])
-        
-        with tabs[0]:
-            st.subheader("🚨 En Riskli 20 Ürün")
-            if len(top20_df) > 0:
-                st.dataframe(top20_df, use_container_width=True, hide_index=True)
-            else:
-                st.success("Riskli ürün yok!")
-        
-        with tabs[1]:
-            st.subheader("🔒 İç Hırsızlık (≥100TL)")
-            st.caption("Fark büyüdükçe risk AZALIR, eşitse EN YÜKSEK")
-            if len(internal_df) > 0:
-                st.dataframe(internal_df, use_container_width=True, hide_index=True)
-            else:
-                st.success("İç hırsızlık riski yok!")
-        
-        with tabs[2]:
-            st.subheader("🔄 Kronik Açık")
-            st.caption("Her iki dönemde de Fark < 0")
-            if len(chronic_df) > 0:
-                st.dataframe(chronic_df, use_container_width=True, hide_index=True)
-            else:
-                st.success("Kronik açık yok!")
-        
-        with tabs[3]:
-            st.subheader("🔥 Kronik Fire")
-            st.caption("Her iki dönemde de fire kaydı var")
-            if len(chronic_fire_df) > 0:
-                st.dataframe(chronic_fire_df, use_container_width=True, hide_index=True)
-            else:
-                st.success("Kronik fire yok!")
-        
-        with tabs[4]:
-            st.subheader("🔥 Fire Manipülasyonu")
-            st.caption("Fire var ama Fark+Kısmi > 0")
-            if len(fire_manip_df) > 0:
-                st.dataframe(fire_manip_df, use_container_width=True, hide_index=True)
-            else:
-                st.success("Fire manipülasyonu yok!")
-        
-        with tabs[5]:
-            st.subheader("🚬 Sigara Açığı")
-            if len(cigarette_df) > 0:
-                st.error("⚠️ Sigarada açık = HIRSIZLIK BELİRTİSİ")
-                st.dataframe(cigarette_df, use_container_width=True, hide_index=True)
-            else:
-                st.success("Sigara açığı yok!")
-        
-        with tabs[6]:
-            st.subheader("💰 10 TL Aktivitesi Ürünleri")
-            
-            if kasa_summary['toplam_adet'] != 0:
-                if kasa_summary['toplam_adet'] > 0:
-                    st.error(f"⚠️ NET +{kasa_summary['toplam_adet']:.0f} adet / {kasa_summary['toplam_tutar']:,.0f} TL FAZLA - Gerçek açığı gizliyor olabilir!")
+            # Metrikler - Alt
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric("🔒 İç Hırs.", f"{len(internal_df)}")
+            with col2:
+                st.metric("🔄 Kr.Açık", f"{len(chronic_df)}")
+            with col3:
+                st.metric("🔥 Kr.Fire", f"{len(chronic_fire_df)}")
+            with col4:
+                if len(cigarette_df) > 0:
+                    st.metric("🚬 SİGARA", f"{len(cigarette_df)}", delta="RİSK!", delta_color="inverse")
                 else:
-                    st.warning(f"📉 NET {kasa_summary['toplam_adet']:.0f} adet / {kasa_summary['toplam_tutar']:,.0f} TL AÇIK")
-            
-            if len(kasa_activity_df) > 0:
-                st.dataframe(kasa_activity_df, use_container_width=True, hide_index=True)
-            else:
-                st.success("Kasa aktivitesi ürünlerinde sorun yok!")
+                    st.metric("🚬 Sigara", "0")
+            with col5:
+                if kasa_summary['toplam_adet'] > 0:
+                    st.metric("💰 10 TL", f"+{kasa_summary['toplam_adet']:.0f} / {kasa_summary['toplam_tutar']:,.0f}₺", delta="FAZLA!", delta_color="inverse")
+                elif kasa_summary['toplam_adet'] < 0:
+                    st.metric("💰 10 TL", f"{kasa_summary['toplam_adet']:.0f} / {kasa_summary['toplam_tutar']:,.0f}₺", delta="AÇIK", delta_color="normal")
+                else:
+                    st.metric("💰 10 TL", "0")
         
-        with tabs[7]:
-            st.subheader("📥 Rapor İndir")
+            # Yönetici Özeti
+            if exec_comments:
+                with st.expander("📋 Yönetici Özeti", expanded=True):
+                    for comment in exec_comments[:5]:
+                        st.markdown(comment)
+        
+            st.markdown("---")
+        
+            # Sekmeler
+            tabs = st.tabs(["🚨 Riskli 20", "🔒 İç Hırs.", "🔄 Kr.Açık", "🔥 Kr.Fire", "🔥 Fire Man.", "🚬 Sigara", "💰 10 TL Akt.", "📥 İndir"])
+        
+            with tabs[0]:
+                st.subheader("🚨 En Riskli 20 Ürün")
+                if len(top20_df) > 0:
+                    st.dataframe(top20_df, use_container_width=True, hide_index=True)
+                else:
+                    st.success("Riskli ürün yok!")
+        
+            with tabs[1]:
+                st.subheader("🔒 İç Hırsızlık (≥100TL)")
+                st.caption("Fark büyüdükçe risk AZALIR, eşitse EN YÜKSEK")
+                if len(internal_df) > 0:
+                    st.dataframe(internal_df, use_container_width=True, hide_index=True)
+                else:
+                    st.success("İç hırsızlık riski yok!")
+        
+            with tabs[2]:
+                st.subheader("🔄 Kronik Açık")
+                st.caption("Her iki dönemde de Fark < 0")
+                if len(chronic_df) > 0:
+                    st.dataframe(chronic_df, use_container_width=True, hide_index=True)
+                else:
+                    st.success("Kronik açık yok!")
+        
+            with tabs[3]:
+                st.subheader("🔥 Kronik Fire")
+                st.caption("Her iki dönemde de fire kaydı var")
+                if len(chronic_fire_df) > 0:
+                    st.dataframe(chronic_fire_df, use_container_width=True, hide_index=True)
+                else:
+                    st.success("Kronik fire yok!")
+        
+            with tabs[4]:
+                st.subheader("🔥 Fire Manipülasyonu")
+                st.caption("Fire var ama Fark+Kısmi > 0")
+                if len(fire_manip_df) > 0:
+                    st.dataframe(fire_manip_df, use_container_width=True, hide_index=True)
+                else:
+                    st.success("Fire manipülasyonu yok!")
+        
+            with tabs[5]:
+                st.subheader("🚬 Sigara Açığı")
+                if len(cigarette_df) > 0:
+                    st.error("⚠️ Sigarada açık = HIRSIZLIK BELİRTİSİ")
+                    st.dataframe(cigarette_df, use_container_width=True, hide_index=True)
+                else:
+                    st.success("Sigara açığı yok!")
+        
+            with tabs[6]:
+                st.subheader("💰 10 TL Aktivitesi Ürünleri")
             
-            excel_output = create_excel_report(
-                df_display, internal_df, chronic_df, chronic_fire_df, cigarette_df,
-                external_df, family_df, fire_manip_df, kasa_activity_df, top20_df,
-                exec_comments, group_stats, selected, magaza_adi, params
-            )
+                if kasa_summary['toplam_adet'] != 0:
+                    if kasa_summary['toplam_adet'] > 0:
+                        st.error(f"⚠️ NET +{kasa_summary['toplam_adet']:.0f} adet / {kasa_summary['toplam_tutar']:,.0f} TL FAZLA - Gerçek açığı gizliyor olabilir!")
+                    else:
+                        st.warning(f"📉 NET {kasa_summary['toplam_adet']:.0f} adet / {kasa_summary['toplam_tutar']:,.0f} TL AÇIK")
             
-            st.download_button(
-                label=f"📥 {selected} Raporu İndir",
-                data=excel_output,
-                file_name=f"{selected}_Risk_Raporu.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                if len(kasa_activity_df) > 0:
+                    st.dataframe(kasa_activity_df, use_container_width=True, hide_index=True)
+                else:
+                    st.success("Kasa aktivitesi ürünlerinde sorun yok!")
+        
+            with tabs[7]:
+                st.subheader("📥 Rapor İndir")
             
-            if len(magazalar) > 1:
-                st.markdown("---")
-                if st.button("🗜️ Tüm Mağazaları Hazırla (ZIP)"):
-                    with st.spinner("Raporlar hazırlanıyor..."):
-                        zip_buffer = BytesIO()
-                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                            for mag in magazalar:
-                                df_mag = df[df['Mağaza Kodu'] == mag].copy()
-                                mag_adi = df_mag['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_mag.columns and len(df_mag) > 0 else ''
+                excel_output = create_excel_report(
+                    df_display, internal_df, chronic_df, chronic_fire_df, cigarette_df,
+                    external_df, family_df, fire_manip_df, kasa_activity_df, top20_df,
+                    exec_comments, group_stats, selected, magaza_adi, params
+                )
+            
+                st.download_button(
+                    label=f"📥 {selected} Raporu İndir",
+                    data=excel_output,
+                    file_name=f"{selected}_Risk_Raporu.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            
+                if len(magazalar) > 1:
+                    st.markdown("---")
+                    if st.button("🗜️ Tüm Mağazaları Hazırla (ZIP)"):
+                        with st.spinner("Raporlar hazırlanıyor..."):
+                            zip_buffer = BytesIO()
+                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                                for mag in magazalar:
+                                    df_mag = df[df['Mağaza Kodu'] == mag].copy()
+                                    mag_adi = df_mag['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_mag.columns and len(df_mag) > 0 else ''
                                 
-                                int_df = detect_internal_theft(df_mag)
-                                chr_df = detect_chronic_products(df_mag)
-                                chr_fire_df = detect_chronic_fire(df_mag)
-                                cig_df = detect_cigarette_shortage(df_mag)
-                                ext_df = detect_external_theft(df_mag)
-                                fam_df = find_product_families(df_mag)
-                                fire_df = detect_fire_manipulation(df_mag)
-                                exec_c, grp_s = generate_executive_summary(df_mag)
+                                    int_df = detect_internal_theft(df_mag)
+                                    chr_df = detect_chronic_products(df_mag)
+                                    chr_fire_df = detect_chronic_fire(df_mag)
+                                    cig_df = detect_cigarette_shortage(df_mag)
+                                    ext_df = detect_external_theft(df_mag)
+                                    fam_df = find_product_families(df_mag)
+                                    fire_df = detect_fire_manipulation(df_mag)
+                                    kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
                                 
-                                int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
-                                chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
-                                kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
+                                    int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
+                                    chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
                                 
-                                t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
-                                exec_c, grp_s = generate_executive_summary(df_mag, kasa_df, kasa_sum)
+                                    t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
+                                    exec_c, grp_s = generate_executive_summary(df_mag, kasa_df, kasa_sum)
                                 
-                                excel_data = create_excel_report(
-                                    df_mag, int_df, chr_df, chr_fire_df, cig_df,
-                                    ext_df, fam_df, fire_df, kasa_df, t20_df,
-                                    exec_c, grp_s, mag, mag_adi, params
-                                )
+                                    excel_data = create_excel_report(
+                                        df_mag, int_df, chr_df, chr_fire_df, cig_df,
+                                        ext_df, fam_df, fire_df, kasa_df, t20_df,
+                                        exec_c, grp_s, mag, mag_adi, params
+                                    )
                                 
-                                zf.writestr(f"{mag}_Risk_Raporu.xlsx", excel_data.getvalue())
+                                    zf.writestr(f"{mag}_Risk_Raporu.xlsx", excel_data.getvalue())
                         
-                        zip_buffer.seek(0)
-                        st.download_button(
-                            label=f"📥 {len(magazalar)} Mağaza ZIP İndir",
-                            data=zip_buffer,
-                            file_name="Tum_Magazalar_Rapor.zip",
-                            mime="application/zip"
-                        )
+                            zip_buffer.seek(0)
+                            st.download_button(
+                                label=f"📥 {len(magazalar)} Mağaza ZIP İndir",
+                                data=zip_buffer,
+                                file_name="Tum_Magazalar_Rapor.zip",
+                                mime="application/zip"
+                            )
     
     except Exception as e:
         st.error(f"Hata: {str(e)}")
