@@ -769,18 +769,25 @@ def analyze_region(df, kasa_kodlari):
         # Temel metrikler
         toplam_satis = df_mag['Satış Tutarı'].sum()
         
-        # Toplam hesabı (Fark + Kısmi + Önceki)
-        df_mag['_TOPLAM_TUTAR'] = df_mag['Fark Tutarı'] + df_mag.get('Kısmi Envanter Tutarı', 0).fillna(0) + df_mag.get('Önceki Fark Tutarı', 0).fillna(0)
-        toplam_fark = df_mag['_TOPLAM_TUTAR'].sum()
-        
-        fire_tutari = df_mag['Fire Tutarı'].sum()
-        kismi_tutari = df_mag['Kısmi Envanter Tutarı'].fillna(0).sum()
+        # Fark = Fark Tutarı + Kısmi Envanter Tutarı
         fark_tutari = df_mag['Fark Tutarı'].fillna(0).sum()
+        kismi_tutari = df_mag['Kısmi Envanter Tutarı'].fillna(0).sum()
+        fark = fark_tutari + kismi_tutari
+        
+        # Fire = Fire Tutarı
+        fire = df_mag['Fire Tutarı'].fillna(0).sum()
+        
+        # Toplam Açık = Fark + Fire
+        toplam_acik = fark + fire
+        
+        # Oranlar
+        fark_oran = abs(fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+        fire_oran = abs(fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+        toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
         
         # Günlük hesaplar
-        gunluk_fark = toplam_fark / gun_sayisi
-        gunluk_fire = fire_tutari / gun_sayisi
-        fire_oran = abs(fire_tutari) / toplam_satis * 100 if toplam_satis > 0 else 0
+        gunluk_fark = fark / gun_sayisi
+        gunluk_fire = fire / gun_sayisi
         
         # Risk analizleri
         internal_df = detect_internal_theft(df_mag)
@@ -790,22 +797,18 @@ def analyze_region(df, kasa_kodlari):
         fire_manip_df = detect_fire_manipulation(df_mag)
         kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
         
-        # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
-        kayip = fark_tutari + fire_tutari + kismi_tutari
-        kayip_orani = abs(kayip) / toplam_satis * 100 if toplam_satis > 0 else 0
-        
         # Risk puanı hesapla (ağırlıklı)
         risk_puan = 0
         risk_nedenler = []
         
-        # Kayıp oranı
-        if kayip_orani > 2:
+        # Toplam oran bazlı risk
+        if toplam_oran > 2:
             risk_puan += 40
-            risk_nedenler.append(f"Kayıp %{kayip_orani:.1f}")
-        elif kayip_orani > 1.5:
+            risk_nedenler.append(f"Toplam %{toplam_oran:.1f}")
+        elif toplam_oran > 1.5:
             risk_puan += 25
-            risk_nedenler.append(f"Kayıp %{kayip_orani:.1f}")
-        elif kayip_orani > 1:
+            risk_nedenler.append(f"Toplam %{toplam_oran:.1f}")
+        elif toplam_oran > 1:
             risk_puan += 15
         
         # İç hırsızlık
@@ -870,10 +873,12 @@ def analyze_region(df, kasa_kodlari):
             'Mağaza Adı': mag_adi,
             'BS': bs,
             'Satış': toplam_satis,
-            'Fark': toplam_fark,
-            'Fire': fire_tutari,
-            'Kayıp %': kayip_orani,
+            'Fark': fark,
+            'Fire': fire,
+            'Toplam Açık': toplam_acik,
+            'Fark %': fark_oran,
             'Fire %': fire_oran,
+            'Toplam %': toplam_oran,
             'Gün': gun_sayisi,
             'Günlük Fark': gunluk_fark,
             'Günlük Fire': gunluk_fire,
@@ -1171,29 +1176,38 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
     ws['A4'].font = subtitle_font
     
     toplam_satis = df['Satış Tutarı'].sum()
-    net_fark = df['Fark Tutarı'].sum()
-    toplam_acik = df[df['Fark Tutarı'] < 0]['Fark Tutarı'].sum()
-    fire_tutari = df['Fire Tutarı'].sum()
+    fark_tutari = df['Fark Tutarı'].fillna(0).sum()
     kismi_tutari = df['Kısmi Envanter Tutarı'].fillna(0).sum()
-    # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
-    kayip = net_fark + fire_tutari + kismi_tutari
-    acik_oran = abs(kayip) / toplam_satis * 100 if toplam_satis > 0 else 0
+    fire_tutari = df['Fire Tutarı'].fillna(0).sum()
+    
+    # Fark = Fark Tutarı + Kısmi
+    fark = fark_tutari + kismi_tutari
+    # Toplam Açık = Fark + Fire
+    toplam_acik = fark + fire_tutari
+    
+    # Oranlar
+    fark_oran = abs(fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+    fire_oran = abs(fire_tutari) / toplam_satis * 100 if toplam_satis > 0 else 0
+    toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
     
     metrics = [
         ('Toplam Ürün', len(df)),
         ('Açık Veren Ürün', len(df[df['Fark Miktarı'] < 0])),
         ('Toplam Satış', f"{toplam_satis:,.0f} TL"),
-        ('Net Fark', f"{net_fark:,.0f} TL"),
-        ('Fire Tutarı', f"{fire_tutari:,.0f} TL"),
-        ('Açık/Satış Oranı', f"%{acik_oran:.2f}"),
+        ('Fark (Fark+Kısmi)', f"{fark:,.0f} TL"),
+        ('Fire', f"{fire_tutari:,.0f} TL"),
+        ('Toplam Açık', f"{toplam_acik:,.0f} TL"),
+        ('Fark Oranı', f"%{fark_oran:.2f}"),
+        ('Fire Oranı', f"%{fire_oran:.2f}"),
+        ('Toplam Oran', f"%{toplam_oran:.2f}"),
     ]
     
     for i, (label, value) in enumerate(metrics, start=5):
         ws[f'A{i}'] = label
         ws[f'B{i}'] = value
     
-    ws['A12'] = "RİSK DAĞILIMI"
-    ws['A12'].font = subtitle_font
+    ws['A15'] = "RİSK DAĞILIMI"
+    ws['A15'].font = subtitle_font
     
     risks = [
         ('İç Hırsızlık (≥100TL)', len(internal_df)),
@@ -1203,17 +1217,17 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
         ('Fire Manipülasyonu', len(fire_manip_df)),
     ]
     
-    for i, (label, value) in enumerate(risks, start=13):
+    for i, (label, value) in enumerate(risks, start=16):
         ws[f'A{i}'] = label
         ws[f'B{i}'] = value
         if 'Sigara' in label and value > 0:
             ws[f'B{i}'].fill = PatternFill('solid', fgColor='FF4444')
             ws[f'B{i}'].font = Font(bold=True, color='FFFFFF')
     
-    ws['A19'] = "YÖNETİCİ ÖZETİ"
-    ws['A19'].font = subtitle_font
+    ws['A22'] = "YÖNETİCİ ÖZETİ"
+    ws['A22'].font = subtitle_font
     
-    for i, comment in enumerate(exec_comments[:10], start=20):
+    for i, comment in enumerate(exec_comments[:10], start=23):
         ws[f'A{i}'] = comment
     
     auto_adjust_column_width(ws)
@@ -1408,12 +1422,15 @@ if uploaded_file is not None:
             else:
                 # Bölge toplamları
                 toplam_satis = region_df['Satış'].sum()
-                toplam_fark = region_df['Fark'].sum()
+                toplam_fark = region_df['Fark'].sum()  # Fark + Kısmi
                 toplam_fire = region_df['Fire'].sum()
+                toplam_acik = region_df['Toplam Açık'].sum()  # Fark + Fire
                 toplam_gun = region_df['Gün'].sum()
-                # Kayıp Oranı = |Fark + Fire| / Satış × 100 (Bölge özetinde Kısmi zaten Fark içinde)
-                genel_oran = abs(toplam_fark + toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+                
+                # Oranlar
+                fark_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
                 fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+                toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
                 gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
                 gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
                 
@@ -1428,11 +1445,11 @@ if uploaded_file is not None:
                 with col1:
                     st.metric("💰 Toplam Satış", f"{toplam_satis/1_000_000:.1f}M TL")
                 with col2:
-                    st.metric("📉 Toplam Fark", f"{toplam_fark:,.0f} TL", f"Günlük: {gunluk_fark:,.0f}₺")
+                    st.metric("📉 Fark", f"{toplam_fark:,.0f} TL", f"%{fark_oran:.2f} | Günlük: {gunluk_fark:,.0f}₺")
                 with col3:
-                    st.metric("🔥 Toplam Fire", f"{toplam_fire:,.0f} TL", f"Günlük: {gunluk_fire:,.0f}₺")
+                    st.metric("🔥 Fire", f"{toplam_fire:,.0f} TL", f"%{fire_oran:.2f} | Günlük: {gunluk_fire:,.0f}₺")
                 with col4:
-                    st.metric("📊 Kayıp Oranı", f"%{genel_oran:.2f}", f"Fire: %{fire_oran:.2f}")
+                    st.metric("📊 Toplam", f"{toplam_acik:,.0f} TL", f"%{toplam_oran:.2f}")
                 
                 # Risk dağılımı
                 st.markdown("### 📊 Risk Dağılımı")
@@ -1632,23 +1649,29 @@ if uploaded_file is not None:
         
             st.markdown("---")
         
+            # Metrikler hesapla
+            toplam_satis = df_display['Satış Tutarı'].sum()
+            fark_tutari = df_display['Fark Tutarı'].fillna(0).sum()
+            kismi_tutari = df_display['Kısmi Envanter Tutarı'].fillna(0).sum()
+            fire_tutari = df_display['Fire Tutarı'].fillna(0).sum()
+            
+            fark = fark_tutari + kismi_tutari
+            toplam_acik = fark + fire_tutari
+            
+            fark_oran = abs(fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+            fire_oran = abs(fire_tutari) / toplam_satis * 100 if toplam_satis > 0 else 0
+            toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+        
             # Metrikler - Üst
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.markdown(f'<div class="{risk_class}"><b>RİSK</b><br/><h2>{risk_seviyesi}</h2></div>', unsafe_allow_html=True)
             with col2:
-                st.metric("💰 Satış", f"{df_display['Satış Tutarı'].sum():,.0f} TL")
+                st.metric("💰 Satış", f"{toplam_satis:,.0f} TL")
             with col3:
-                st.metric("📉 Fark", f"{df_display['Fark Tutarı'].sum():,.0f} TL")
+                st.metric("📉 Fark", f"{fark:,.0f} TL", f"%{fark_oran:.2f}")
             with col4:
-                toplam_satis = df_display['Satış Tutarı'].sum()
-                # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
-                toplam_fark = df_display['Fark Tutarı'].fillna(0).sum()
-                toplam_fire = df_display['Fire Tutarı'].fillna(0).sum()
-                toplam_kismi = df_display['Kısmi Envanter Tutarı'].fillna(0).sum()
-                kayip = toplam_fark + toplam_fire + toplam_kismi
-                oran = abs(kayip) / toplam_satis * 100 if toplam_satis > 0 else 0
-                st.metric("📊 Oran", f"%{oran:.2f}")
+                st.metric("📊 Toplam", f"%{toplam_oran:.2f}")
         
             # Metrikler - Alt
             col1, col2, col3, col4, col5 = st.columns(5)
