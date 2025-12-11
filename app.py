@@ -1622,8 +1622,12 @@ if uploaded_file is not None:
                 st.metric("📉 Fark", f"{df_display['Fark Tutarı'].sum():,.0f} TL")
             with col4:
                 toplam_satis = df_display['Satış Tutarı'].sum()
-                toplam_acik = df_display[df_display['Fark Tutarı'] < 0]['Fark Tutarı'].sum()
-                oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+                # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
+                toplam_fark = df_display['Fark Tutarı'].fillna(0).sum()
+                toplam_fire = df_display['Fire Tutarı'].fillna(0).sum()
+                toplam_kismi = df_display['Kısmi Envanter Tutarı'].fillna(0).sum()
+                kayip = toplam_fark + toplam_fire + toplam_kismi
+                oran = abs(kayip) / toplam_satis * 100 if toplam_satis > 0 else 0
                 st.metric("📊 Oran", f"%{oran:.2f}")
         
             # Metrikler - Alt
