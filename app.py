@@ -714,8 +714,21 @@ def analyze_region(df, kasa_kodlari):
         if len(df_mag) == 0:
             continue
         
-        # Mağaza adı
+        # Mağaza adı ve BS
         mag_adi = df_mag['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_mag.columns else ''
+        bs = df_mag['Bölge Sorumlusu'].iloc[0] if 'Bölge Sorumlusu' in df_mag.columns else ''
+        
+        # Gün hesabı
+        gun_sayisi = 1
+        try:
+            if 'Envanter Tarihi' in df_mag.columns and 'Envanter Başlangıç Tarihi' in df_mag.columns:
+                env_tarihi = pd.to_datetime(df_mag['Envanter Tarihi'].iloc[0])
+                env_baslangic = pd.to_datetime(df_mag['Envanter Başlangıç Tarihi'].iloc[0])
+                gun_sayisi = (env_tarihi - env_baslangic).days
+                if gun_sayisi <= 0:
+                    gun_sayisi = 1
+        except:
+            gun_sayisi = 1
         
         # Temel metrikler
         toplam_satis = df_mag['Satış Tutarı'].sum()
@@ -725,6 +738,11 @@ def analyze_region(df, kasa_kodlari):
         toplam_fark = df_mag['_TOPLAM_TUTAR'].sum()
         
         fire_tutari = df_mag['Fire Tutarı'].sum()
+        
+        # Günlük hesaplar
+        gunluk_fark = toplam_fark / gun_sayisi
+        gunluk_fire = fire_tutari / gun_sayisi
+        fire_oran = abs(fire_tutari) / toplam_satis * 100 if toplam_satis > 0 else 0
         
         # Risk analizleri
         internal_df = detect_internal_theft(df_mag)
@@ -803,10 +821,15 @@ def analyze_region(df, kasa_kodlari):
         results.append({
             'Mağaza Kodu': mag,
             'Mağaza Adı': mag_adi,
+            'BS': bs,
             'Satış': toplam_satis,
             'Fark': toplam_fark,
             'Fire': fire_tutari,
             'Kayıp %': kayip_orani,
+            'Fire %': fire_oran,
+            'Gün': gun_sayisi,
+            'Günlük Fark': gunluk_fark,
+            'Günlük Fire': gunluk_fire,
             'İç Hırs.': len(internal_df),
             'Kr.Açık': len(chronic_df),
             'Kr.Fire': len(chronic_fire_df),
@@ -1326,7 +1349,11 @@ if uploaded_file is not None:
                 toplam_satis = region_df['Satış'].sum()
                 toplam_fark = region_df['Fark'].sum()
                 toplam_fire = region_df['Fire'].sum()
+                toplam_gun = region_df['Gün'].sum()
                 genel_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+                fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
+                gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
+                gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
                 
                 # Risk dağılımı
                 kritik_sayisi = len(region_df[region_df['Risk'].str.contains('KRİTİK')])
@@ -1339,11 +1366,11 @@ if uploaded_file is not None:
                 with col1:
                     st.metric("💰 Toplam Satış", f"{toplam_satis/1_000_000:.1f}M TL")
                 with col2:
-                    st.metric("📉 Toplam Fark", f"{toplam_fark:,.0f} TL")
+                    st.metric("📉 Toplam Fark", f"{toplam_fark:,.0f} TL", f"Günlük: {gunluk_fark:,.0f}₺")
                 with col3:
-                    st.metric("🔥 Toplam Fire", f"{toplam_fire:,.0f} TL")
+                    st.metric("🔥 Toplam Fire", f"{toplam_fire:,.0f} TL", f"Günlük: {gunluk_fire:,.0f}₺")
                 with col4:
-                    st.metric("📊 Genel Oran", f"%{genel_oran:.2f}")
+                    st.metric("📊 Kayıp Oranı", f"%{genel_oran:.2f}", f"Fire: %{fire_oran:.2f}")
                 
                 # Risk dağılımı
                 st.markdown("### 📊 Risk Dağılımı")
@@ -1371,12 +1398,54 @@ if uploaded_file is not None:
                 
                 with tabs[0]:
                     st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
-                    display_cols = ['Mağaza Kodu', 'Mağaza Adı', 'Satış', 'Fark', 'Kayıp %', 'Risk', 'Risk Nedenleri']
-                    display_df = region_df[display_cols].copy()
-                    display_df['Satış'] = display_df['Satış'].apply(lambda x: f"{x:,.0f}")
-                    display_df['Fark'] = display_df['Fark'].apply(lambda x: f"{x:,.0f}")
-                    display_df['Kayıp %'] = display_df['Kayıp %'].apply(lambda x: f"%{x:.1f}")
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+                    # Her mağaza için satır ve indirme butonu
+                    for idx, (_, row) in enumerate(region_df.iterrows()):
+                        col1, col2 = st.columns([6, 1])
+                        with col1:
+                            risk_emoji = "🔴" if "KRİTİK" in row['Risk'] else "🟠" if "RİSKLİ" in row['Risk'] else "🟡" if "DİKKAT" in row['Risk'] else "🟢"
+                            sigara_txt = f" | 🚬 {row['Sigara']}" if row['Sigara'] > 0 else ""
+                            bs_txt = f" | BS: {row['BS']}" if row['BS'] else ""
+                            st.write(f"{risk_emoji} **{row['Mağaza Kodu']}** - {row['Mağaza Adı'][:25]}{bs_txt} | "
+                                     f"Fark: {row['Fark']:,.0f}₺ (Günlük: {row['Günlük Fark']:,.0f}₺) | "
+                                     f"Kayıp: %{row['Kayıp %']:.1f} | Risk: {row['Risk Puan']:.0f}{sigara_txt}")
+                        with col2:
+                            # Basit rapor oluştur
+                            report_wb = Workbook()
+                            ws = report_wb.active
+                            ws.title = "Mağaza Raporu"
+                            ws['A1'] = f"Mağaza: {row['Mağaza Kodu']} - {row['Mağaza Adı']}"
+                            ws['A2'] = f"BS: {row['BS']}"
+                            metrics = [
+                                ("Satış", f"{row['Satış']:,.0f} TL"),
+                                ("Fark", f"{row['Fark']:,.0f} TL"),
+                                ("Günlük Fark", f"{row['Günlük Fark']:,.0f} TL"),
+                                ("Fire", f"{row['Fire']:,.0f} TL"),
+                                ("Günlük Fire", f"{row['Günlük Fire']:,.0f} TL"),
+                                ("Kayıp %", f"%{row['Kayıp %']:.2f}"),
+                                ("Fire %", f"%{row['Fire %']:.2f}"),
+                                ("Gün", f"{row['Gün']:.0f}"),
+                                ("İç Hırsızlık", f"{row['İç Hırs.']}"),
+                                ("Kronik Açık", f"{row['Kr.Açık']}"),
+                                ("Sigara", f"{row['Sigara']}"),
+                                ("10TL Adet", f"{row['10TL Adet']:.0f}"),
+                                ("Risk Puanı", f"{row['Risk Puan']:.0f}"),
+                                ("Risk", row['Risk']),
+                            ]
+                            for i, (label, value) in enumerate(metrics, start=4):
+                                ws[f'A{i}'] = label
+                                ws[f'B{i}'] = value
+                            report_output = BytesIO()
+                            report_wb.save(report_output)
+                            report_output.seek(0)
+                            
+                            st.download_button(
+                                "📥", 
+                                data=report_output.getvalue(),
+                                file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"region_dl_{idx}"
+                            )
                 
                 with tabs[1]:
                     st.subheader("🔴 Kritik Mağazalar")
