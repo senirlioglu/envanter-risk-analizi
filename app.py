@@ -1663,7 +1663,7 @@ if uploaded_file is not None:
             toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
         
             # Metrikler - Üst
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.markdown(f'<div class="{risk_class}"><b>RİSK</b><br/><h2>{risk_seviyesi}</h2></div>', unsafe_allow_html=True)
             with col2:
@@ -1671,7 +1671,9 @@ if uploaded_file is not None:
             with col3:
                 st.metric("📉 Fark", f"{fark:,.0f} TL", f"%{fark_oran:.2f}")
             with col4:
-                st.metric("📊 Toplam", f"%{toplam_oran:.2f}")
+                st.metric("🔥 Fire", f"{fire_tutari:,.0f} TL", f"%{fire_oran:.2f}")
+            with col5:
+                st.metric("📊 Toplam", f"{toplam_acik:,.0f} TL", f"%{toplam_oran:.2f}")
         
             # Metrikler - Alt
             col1, col2, col3, col4, col5 = st.columns(5)
