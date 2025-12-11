@@ -1399,53 +1399,71 @@ if uploaded_file is not None:
                 with tabs[0]:
                     st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
                     
-                    # Her mağaza için satır ve indirme butonu
-                    for idx, (_, row) in enumerate(region_df.iterrows()):
-                        col1, col2 = st.columns([6, 1])
-                        with col1:
-                            risk_emoji = "🔴" if "KRİTİK" in row['Risk'] else "🟠" if "RİSKLİ" in row['Risk'] else "🟡" if "DİKKAT" in row['Risk'] else "🟢"
-                            sigara_txt = f" | 🚬 {row['Sigara']}" if row['Sigara'] > 0 else ""
-                            bs_txt = f" | BS: {row['BS']}" if row['BS'] else ""
-                            st.write(f"{risk_emoji} **{row['Mağaza Kodu']}** - {row['Mağaza Adı'][:25]}{bs_txt} | "
-                                     f"Fark: {row['Fark']:,.0f}₺ (Günlük: {row['Günlük Fark']:,.0f}₺) | "
-                                     f"Kayıp: %{row['Kayıp %']:.1f} | Risk: {row['Risk Puan']:.0f}{sigara_txt}")
-                        with col2:
-                            # Basit rapor oluştur
-                            report_wb = Workbook()
-                            ws = report_wb.active
-                            ws.title = "Mağaza Raporu"
-                            ws['A1'] = f"Mağaza: {row['Mağaza Kodu']} - {row['Mağaza Adı']}"
-                            ws['A2'] = f"BS: {row['BS']}"
-                            metrics = [
-                                ("Satış", f"{row['Satış']:,.0f} TL"),
-                                ("Fark", f"{row['Fark']:,.0f} TL"),
-                                ("Günlük Fark", f"{row['Günlük Fark']:,.0f} TL"),
-                                ("Fire", f"{row['Fire']:,.0f} TL"),
-                                ("Günlük Fire", f"{row['Günlük Fire']:,.0f} TL"),
-                                ("Kayıp %", f"%{row['Kayıp %']:.2f}"),
-                                ("Fire %", f"%{row['Fire %']:.2f}"),
-                                ("Gün", f"{row['Gün']:.0f}"),
-                                ("İç Hırsızlık", f"{row['İç Hırs.']}"),
-                                ("Kronik Açık", f"{row['Kr.Açık']}"),
-                                ("Sigara", f"{row['Sigara']}"),
-                                ("10TL Adet", f"{row['10TL Adet']:.0f}"),
-                                ("Risk Puanı", f"{row['Risk Puan']:.0f}"),
-                                ("Risk", row['Risk']),
-                            ]
-                            for i, (label, value) in enumerate(metrics, start=4):
-                                ws[f'A{i}'] = label
-                                ws[f'B{i}'] = value
-                            report_output = BytesIO()
-                            report_wb.save(report_output)
-                            report_output.seek(0)
-                            
-                            st.download_button(
-                                "📥", 
-                                data=report_output.getvalue(),
-                                file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key=f"region_dl_{idx}"
-                            )
+                    # Tablo gösterimi
+                    display_cols = ['Mağaza Kodu', 'Mağaza Adı', 'BS', 'Fark', 'Günlük Fark', 'Fire', 'Günlük Fire', 'Kayıp %', 'Fire %', 'Sigara', 'Risk Puan', 'Risk']
+                    display_df = region_df[display_cols].copy()
+                    display_df['Fark'] = display_df['Fark'].apply(lambda x: f"{x:,.0f}")
+                    display_df['Günlük Fark'] = display_df['Günlük Fark'].apply(lambda x: f"{x:,.0f}")
+                    display_df['Fire'] = display_df['Fire'].apply(lambda x: f"{x:,.0f}")
+                    display_df['Günlük Fire'] = display_df['Günlük Fire'].apply(lambda x: f"{x:,.0f}")
+                    display_df['Kayıp %'] = display_df['Kayıp %'].apply(lambda x: f"%{x:.1f}")
+                    display_df['Fire %'] = display_df['Fire %'].apply(lambda x: f"%{x:.2f}")
+                    display_df['Risk Puan'] = display_df['Risk Puan'].apply(lambda x: f"{x:.0f}")
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+                    # İndirme butonları
+                    st.markdown("---")
+                    st.markdown("##### 📥 Mağaza Raporu İndir")
+                    
+                    # Mağaza seçimi
+                    magaza_secim = st.selectbox(
+                        "Mağaza Seç",
+                        options=region_df['Mağaza Kodu'].tolist(),
+                        format_func=lambda x: f"{x} - {region_df[region_df['Mağaza Kodu']==x]['Mağaza Adı'].iloc[0]}"
+                    )
+                    
+                    if magaza_secim:
+                        row = region_df[region_df['Mağaza Kodu'] == magaza_secim].iloc[0]
+                        
+                        # Rapor oluştur
+                        report_wb = Workbook()
+                        ws = report_wb.active
+                        ws.title = "Mağaza Raporu"
+                        ws['A1'] = f"Mağaza: {row['Mağaza Kodu']} - {row['Mağaza Adı']}"
+                        ws['A2'] = f"BS: {row['BS']}"
+                        ws['A3'] = f"Dönem: {params.get('donem', '')}"
+                        metrics = [
+                            ("Satış", f"{row['Satış']:,.0f} TL"),
+                            ("Fark", f"{row['Fark']:,.0f} TL"),
+                            ("Günlük Fark", f"{row['Günlük Fark']:,.0f} TL"),
+                            ("Fire", f"{row['Fire']:,.0f} TL"),
+                            ("Günlük Fire", f"{row['Günlük Fire']:,.0f} TL"),
+                            ("Kayıp %", f"%{row['Kayıp %']:.2f}"),
+                            ("Fire %", f"%{row['Fire %']:.2f}"),
+                            ("Gün Sayısı", f"{row['Gün']:.0f}"),
+                            ("İç Hırsızlık", f"{row['İç Hırs.']}"),
+                            ("Kronik Açık", f"{row['Kr.Açık']}"),
+                            ("Sigara", f"{row['Sigara']}"),
+                            ("10TL Adet", f"{row['10TL Adet']:.0f}"),
+                            ("Risk Puanı", f"{row['Risk Puan']:.0f}"),
+                            ("Risk", row['Risk']),
+                            ("Risk Nedenleri", row['Risk Nedenleri']),
+                        ]
+                        for i, (label, value) in enumerate(metrics, start=5):
+                            ws[f'A{i}'] = label
+                            ws[f'B{i}'] = value
+                        ws.column_dimensions['A'].width = 20
+                        ws.column_dimensions['B'].width = 30
+                        report_output = BytesIO()
+                        report_wb.save(report_output)
+                        report_output.seek(0)
+                        
+                        st.download_button(
+                            f"📥 {magaza_secim} Raporu İndir",
+                            data=report_output.getvalue(),
+                            file_name=f"{row['Mağaza Kodu']}_Rapor.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
                 
                 with tabs[1]:
                     st.subheader("🔴 Kritik Mağazalar")
