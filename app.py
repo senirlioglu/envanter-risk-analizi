@@ -774,6 +774,8 @@ def analyze_region(df, kasa_kodlari):
         toplam_fark = df_mag['_TOPLAM_TUTAR'].sum()
         
         fire_tutari = df_mag['Fire Tutarı'].sum()
+        kismi_tutari = df_mag['Kısmi Envanter Tutarı'].fillna(0).sum()
+        fark_tutari = df_mag['Fark Tutarı'].fillna(0).sum()
         
         # Günlük hesaplar
         gunluk_fark = toplam_fark / gun_sayisi
@@ -788,8 +790,9 @@ def analyze_region(df, kasa_kodlari):
         fire_manip_df = detect_fire_manipulation(df_mag)
         kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
         
-        # Risk seviyesi
-        kayip_orani = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+        # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
+        kayip = fark_tutari + fire_tutari + kismi_tutari
+        kayip_orani = abs(kayip) / toplam_satis * 100 if toplam_satis > 0 else 0
         
         # Risk puanı hesapla (ağırlıklı)
         risk_puan = 0
@@ -923,7 +926,8 @@ def create_region_excel_report(region_df, df_all, kasa_kodlari, params):
     toplam_satis = region_df['Satış'].sum()
     toplam_fark = region_df['Fark'].sum()
     toplam_fire = region_df['Fire'].sum()
-    genel_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+    # Kayıp Oranı = |Fark + Fire| / Satış × 100
+    genel_oran = abs(toplam_fark + toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
     
     ws['A5'] = "Toplam Satış"
     ws['B5'] = f"{toplam_satis:,.0f} TL"
@@ -1046,11 +1050,21 @@ def create_region_excel_report(region_df, df_all, kasa_kodlari, params):
 def calculate_store_risk(df, internal_df, chronic_df, cigarette_df):
     """Mağaza risk seviyesi"""
     toplam_satis = df['Satış Tutarı'].sum()
-    toplam_acik = df[df['Fark Tutarı'] < 0]['Fark Tutarı'].sum()
+    fark_tutari = df['Fark Tutarı'].fillna(0).sum()
+    fire_tutari = df['Fire Tutarı'].fillna(0).sum()
+    kismi_tutari = df['Kısmi Envanter Tutarı'].fillna(0).sum()
     
-    kayip_orani = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+    # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
+    kayip = fark_tutari + fire_tutari + kismi_tutari
+    kayip_orani = abs(kayip) / toplam_satis * 100 if toplam_satis > 0 else 0
     ic_hirsizlik = len(internal_df)
-    sigara_acik = len(cigarette_df)
+    
+    # Sigara açığı - toplam bazlı
+    sigara_acik = 0
+    if len(cigarette_df) > 0 and 'Ürün Toplam' in cigarette_df.columns:
+        son_satir = cigarette_df.iloc[-1]
+        if son_satir['Malzeme Kodu'] == '*** TOPLAM ***':
+            sigara_acik = abs(son_satir['Ürün Toplam'])
     
     if kayip_orani > 2 or ic_hirsizlik > 50 or sigara_acik > 5:
         return "KRİTİK", "risk-kritik"
@@ -1160,7 +1174,10 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
     net_fark = df['Fark Tutarı'].sum()
     toplam_acik = df[df['Fark Tutarı'] < 0]['Fark Tutarı'].sum()
     fire_tutari = df['Fire Tutarı'].sum()
-    acik_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
+    kismi_tutari = df['Kısmi Envanter Tutarı'].fillna(0).sum()
+    # Kayıp Oranı = |Fark + Fire + Kısmi| / Satış × 100
+    kayip = net_fark + fire_tutari + kismi_tutari
+    acik_oran = abs(kayip) / toplam_satis * 100 if toplam_satis > 0 else 0
     
     metrics = [
         ('Toplam Ürün', len(df)),
@@ -1394,7 +1411,8 @@ if uploaded_file is not None:
                 toplam_fark = region_df['Fark'].sum()
                 toplam_fire = region_df['Fire'].sum()
                 toplam_gun = region_df['Gün'].sum()
-                genel_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+                # Kayıp Oranı = |Fark + Fire| / Satış × 100 (Bölge özetinde Kısmi zaten Fark içinde)
+                genel_oran = abs(toplam_fark + toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
                 fire_oran = abs(toplam_fire) / toplam_satis * 100 if toplam_satis > 0 else 0
                 gunluk_fark = toplam_fark / toplam_gun if toplam_gun > 0 else 0
                 gunluk_fire = toplam_fire / toplam_gun if toplam_gun > 0 else 0
