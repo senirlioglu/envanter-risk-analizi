@@ -11,6 +11,55 @@ import zipfile
 # Mobil uyumlu sayfa ayarı
 st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon="📊")
 
+# ==================== GİRİŞ SİSTEMİ ====================
+USERS = {
+    "ziya": "Gm2025!",
+    "sm1": "Sm2025!",
+    "sm2": "Sm2025!",
+    "sm3": "Sm2025!",
+    "sm4": "Sm2025!",
+}
+
+def login():
+    if "user" not in st.session_state:
+        st.session_state.user = None
+    
+    if st.session_state.user is None:
+        st.markdown("""
+        <div style="max-width: 400px; margin: 100px auto; padding: 40px; 
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    border-radius: 15px; text-align: center;">
+            <h1 style="color: white;">📊 Envanter Risk Analizi</h1>
+            <p style="color: #eee;">Mağaza Detay Analizi</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            st.markdown("### 🔐 Giriş Yap")
+            username = st.text_input("Kullanıcı Adı", key="login_user")
+            password = st.text_input("Şifre", type="password", key="login_pass")
+            
+            if st.button("Giriş", use_container_width=True):
+                if username.lower() in USERS and USERS[username.lower()] == password:
+                    st.session_state.user = username.lower()
+                    st.rerun()
+                else:
+                    st.error("❌ Hatalı kullanıcı adı veya şifre")
+        st.stop()
+
+login()
+
+# Çıkış butonu sidebar'da
+with st.sidebar:
+    st.markdown(f"👤 **{st.session_state.user.upper()}**")
+    if st.button("🚪 Çıkış"):
+        st.session_state.user = None
+        st.rerun()
+    st.divider()
+
+# ==================== ANA UYGULAMA ====================
+
 # Mobil uyumlu CSS
 st.markdown("""
 <style>
@@ -32,6 +81,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🔍 Envanter Risk Analizi")
+
+# Mod seçimi
+analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti"], horizontal=True)
 
 # Dosya yükleme - direkt ekranda
 uploaded_file = st.file_uploader("📁 Excel dosyası yükleyin", type=['xlsx', 'xls'])
@@ -649,6 +701,280 @@ def generate_executive_summary(df, kasa_activity_df=None, kasa_summary=None):
     return comments, group_stats
 
 
+def analyze_region(df, kasa_kodlari):
+    """Bölge geneli analiz - tüm mağazaları karşılaştır"""
+    
+    magazalar = df['Mağaza Kodu'].dropna().unique().tolist()
+    results = []
+    
+    for mag in magazalar:
+        df_mag = df[df['Mağaza Kodu'] == mag].copy()
+        
+        if len(df_mag) == 0:
+            continue
+        
+        # Mağaza adı
+        mag_adi = df_mag['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_mag.columns else ''
+        
+        # Temel metrikler
+        toplam_satis = df_mag['Satış Tutarı'].sum()
+        
+        # Toplam hesabı (Fark + Kısmi + Önceki)
+        df_mag['_TOPLAM_TUTAR'] = df_mag['Fark Tutarı'] + df_mag.get('Kısmi Envanter Tutarı', 0).fillna(0) + df_mag.get('Önceki Fark Tutarı', 0).fillna(0)
+        toplam_fark = df_mag['_TOPLAM_TUTAR'].sum()
+        
+        fire_tutari = df_mag['Fire Tutarı'].sum()
+        
+        # Risk analizleri
+        internal_df = detect_internal_theft(df_mag)
+        chronic_df = detect_chronic_products(df_mag)
+        chronic_fire_df = detect_chronic_fire(df_mag)
+        cigarette_df = detect_cigarette_shortage(df_mag)
+        fire_manip_df = detect_fire_manipulation(df_mag)
+        kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
+        
+        # Risk seviyesi
+        kayip_orani = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+        
+        # Risk puanı hesapla (ağırlıklı)
+        risk_puan = 0
+        risk_nedenler = []
+        
+        # Kayıp oranı
+        if kayip_orani > 2:
+            risk_puan += 40
+            risk_nedenler.append(f"Kayıp %{kayip_orani:.1f}")
+        elif kayip_orani > 1.5:
+            risk_puan += 25
+            risk_nedenler.append(f"Kayıp %{kayip_orani:.1f}")
+        elif kayip_orani > 1:
+            risk_puan += 15
+        
+        # İç hırsızlık
+        if len(internal_df) > 50:
+            risk_puan += 30
+            risk_nedenler.append(f"İç hırs. {len(internal_df)}")
+        elif len(internal_df) > 30:
+            risk_puan += 20
+            risk_nedenler.append(f"İç hırs. {len(internal_df)}")
+        elif len(internal_df) > 15:
+            risk_puan += 10
+        
+        # Sigara açığı (kritik!)
+        if len(cigarette_df) > 5:
+            risk_puan += 35
+            risk_nedenler.append(f"🚬 SİGARA {len(cigarette_df)}")
+        elif len(cigarette_df) > 0:
+            risk_puan += 20
+            risk_nedenler.append(f"🚬 Sigara {len(cigarette_df)}")
+        
+        # Kronik açık
+        if len(chronic_df) > 100:
+            risk_puan += 15
+            risk_nedenler.append(f"Kronik {len(chronic_df)}")
+        elif len(chronic_df) > 50:
+            risk_puan += 10
+        
+        # Fire manipülasyonu
+        if len(fire_manip_df) > 10:
+            risk_puan += 20
+            risk_nedenler.append(f"Fire man. {len(fire_manip_df)}")
+        elif len(fire_manip_df) > 5:
+            risk_puan += 10
+        
+        # 10 TL ürünleri (fazla = şüpheli)
+        if kasa_sum['toplam_adet'] > 20:
+            risk_puan += 15
+            risk_nedenler.append(f"10TL +{kasa_sum['toplam_adet']:.0f}")
+        elif kasa_sum['toplam_adet'] > 10:
+            risk_puan += 10
+        
+        # Risk seviyesi belirleme
+        if risk_puan >= 60:
+            risk_seviye = "🔴 KRİTİK"
+        elif risk_puan >= 40:
+            risk_seviye = "🟠 RİSKLİ"
+        elif risk_puan >= 20:
+            risk_seviye = "🟡 DİKKAT"
+        else:
+            risk_seviye = "🟢 TEMİZ"
+        
+        results.append({
+            'Mağaza Kodu': mag,
+            'Mağaza Adı': mag_adi,
+            'Satış': toplam_satis,
+            'Fark': toplam_fark,
+            'Fire': fire_tutari,
+            'Kayıp %': kayip_orani,
+            'İç Hırs.': len(internal_df),
+            'Kr.Açık': len(chronic_df),
+            'Kr.Fire': len(chronic_fire_df),
+            'Sigara': len(cigarette_df),
+            'Fire Man.': len(fire_manip_df),
+            '10TL Adet': kasa_sum['toplam_adet'],
+            '10TL Tutar': kasa_sum['toplam_tutar'],
+            'Risk Puan': risk_puan,
+            'Risk': risk_seviye,
+            'Risk Nedenleri': " | ".join(risk_nedenler) if risk_nedenler else "-"
+        })
+    
+    result_df = pd.DataFrame(results)
+    if len(result_df) > 0:
+        result_df = result_df.sort_values('Risk Puan', ascending=False)
+    
+    return result_df
+
+
+def create_region_excel_report(region_df, df_all, kasa_kodlari, params):
+    """Bölge özet Excel raporu"""
+    
+    wb = Workbook()
+    
+    header_font = Font(bold=True, color='FFFFFF', size=10)
+    header_fill = PatternFill('solid', fgColor='1F4E79')
+    kritik_fill = PatternFill('solid', fgColor='FF4444')
+    riskli_fill = PatternFill('solid', fgColor='FF8800')
+    dikkat_fill = PatternFill('solid', fgColor='FFCC00')
+    temiz_fill = PatternFill('solid', fgColor='00CC66')
+    title_font = Font(bold=True, size=14)
+    border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                    top=Side(style='thin'), bottom=Side(style='thin'))
+    
+    # ===== BÖLGE ÖZETİ =====
+    ws = wb.active
+    ws.title = "BÖLGE ÖZETİ"
+    
+    ws['A1'] = f"BÖLGE ENVANTER ANALİZİ"
+    ws['A1'].font = title_font
+    ws['A2'] = f"Dönem: {params.get('donem', '')} | Tarih: {params.get('tarih', '')} | Mağaza Sayısı: {len(region_df)}"
+    
+    # Bölge toplamları
+    ws['A4'] = "BÖLGE TOPLAMI"
+    ws['A4'].font = Font(bold=True, size=11)
+    
+    toplam_satis = region_df['Satış'].sum()
+    toplam_fark = region_df['Fark'].sum()
+    toplam_fire = region_df['Fire'].sum()
+    genel_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+    
+    ws['A5'] = "Toplam Satış"
+    ws['B5'] = f"{toplam_satis:,.0f} TL"
+    ws['A6'] = "Toplam Fark"
+    ws['B6'] = f"{toplam_fark:,.0f} TL"
+    ws['A7'] = "Toplam Fire"
+    ws['B7'] = f"{toplam_fire:,.0f} TL"
+    ws['A8'] = "Genel Kayıp Oranı"
+    ws['B8'] = f"%{genel_oran:.2f}"
+    
+    # Risk dağılımı
+    ws['A10'] = "RİSK DAĞILIMI"
+    ws['A10'].font = Font(bold=True, size=11)
+    
+    kritik_sayisi = len(region_df[region_df['Risk'].str.contains('KRİTİK')])
+    riskli_sayisi = len(region_df[region_df['Risk'].str.contains('RİSKLİ')])
+    dikkat_sayisi = len(region_df[region_df['Risk'].str.contains('DİKKAT')])
+    temiz_sayisi = len(region_df[region_df['Risk'].str.contains('TEMİZ')])
+    
+    ws['A11'] = "🔴 KRİTİK"
+    ws['B11'] = kritik_sayisi
+    ws['A12'] = "🟠 RİSKLİ"
+    ws['B12'] = riskli_sayisi
+    ws['A13'] = "🟡 DİKKAT"
+    ws['B13'] = dikkat_sayisi
+    ws['A14'] = "🟢 TEMİZ"
+    ws['B14'] = temiz_sayisi
+    
+    # Mağaza sıralaması
+    ws['A16'] = "MAĞAZA SIRALAMASI (Risk Puanına Göre)"
+    ws['A16'].font = Font(bold=True, size=11)
+    
+    headers = ['Mağaza', 'Adı', 'Satış', 'Fark', 'Kayıp %', 'İç Hırs.', 'Sigara', 'Kr.Açık', 'Risk', 'Neden']
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=17, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = border
+    
+    for row_idx, (_, row) in enumerate(region_df.iterrows(), start=18):
+        ws.cell(row=row_idx, column=1, value=row['Mağaza Kodu']).border = border
+        ws.cell(row=row_idx, column=2, value=row['Mağaza Adı'][:25]).border = border
+        ws.cell(row=row_idx, column=3, value=f"{row['Satış']:,.0f}").border = border
+        ws.cell(row=row_idx, column=4, value=f"{row['Fark']:,.0f}").border = border
+        ws.cell(row=row_idx, column=5, value=f"%{row['Kayıp %']:.1f}").border = border
+        ws.cell(row=row_idx, column=6, value=row['İç Hırs.']).border = border
+        ws.cell(row=row_idx, column=7, value=row['Sigara']).border = border
+        ws.cell(row=row_idx, column=8, value=row['Kr.Açık']).border = border
+        
+        risk_cell = ws.cell(row=row_idx, column=9, value=row['Risk'])
+        risk_cell.border = border
+        if 'KRİTİK' in row['Risk']:
+            risk_cell.fill = kritik_fill
+            risk_cell.font = Font(bold=True, color='FFFFFF')
+        elif 'RİSKLİ' in row['Risk']:
+            risk_cell.fill = riskli_fill
+            risk_cell.font = Font(bold=True, color='FFFFFF')
+        elif 'DİKKAT' in row['Risk']:
+            risk_cell.fill = dikkat_fill
+            risk_cell.font = Font(bold=True)
+        else:
+            risk_cell.fill = temiz_fill
+            risk_cell.font = Font(bold=True, color='FFFFFF')
+        
+        ws.cell(row=row_idx, column=10, value=row['Risk Nedenleri']).border = border
+    
+    # Sütun genişlikleri
+    ws.column_dimensions['A'].width = 12
+    ws.column_dimensions['B'].width = 28
+    ws.column_dimensions['C'].width = 15
+    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['E'].width = 10
+    ws.column_dimensions['F'].width = 10
+    ws.column_dimensions['G'].width = 10
+    ws.column_dimensions['H'].width = 10
+    ws.column_dimensions['I'].width = 12
+    ws.column_dimensions['J'].width = 35
+    
+    # ===== DETAY SHEET =====
+    ws2 = wb.create_sheet("DETAY")
+    
+    detail_headers = ['Mağaza Kodu', 'Mağaza Adı', 'Satış', 'Fark', 'Fire', 'Kayıp %', 
+                      'İç Hırs.', 'Kr.Açık', 'Kr.Fire', 'Sigara', 'Fire Man.', 
+                      '10TL Adet', '10TL Tutar', 'Risk Puan', 'Risk', 'Risk Nedenleri']
+    
+    for col, header in enumerate(detail_headers, 1):
+        cell = ws2.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = border
+    
+    for row_idx, (_, row) in enumerate(region_df.iterrows(), start=2):
+        ws2.cell(row=row_idx, column=1, value=row['Mağaza Kodu']).border = border
+        ws2.cell(row=row_idx, column=2, value=row['Mağaza Adı']).border = border
+        ws2.cell(row=row_idx, column=3, value=row['Satış']).border = border
+        ws2.cell(row=row_idx, column=4, value=row['Fark']).border = border
+        ws2.cell(row=row_idx, column=5, value=row['Fire']).border = border
+        ws2.cell(row=row_idx, column=6, value=row['Kayıp %']).border = border
+        ws2.cell(row=row_idx, column=7, value=row['İç Hırs.']).border = border
+        ws2.cell(row=row_idx, column=8, value=row['Kr.Açık']).border = border
+        ws2.cell(row=row_idx, column=9, value=row['Kr.Fire']).border = border
+        ws2.cell(row=row_idx, column=10, value=row['Sigara']).border = border
+        ws2.cell(row=row_idx, column=11, value=row['Fire Man.']).border = border
+        ws2.cell(row=row_idx, column=12, value=row['10TL Adet']).border = border
+        ws2.cell(row=row_idx, column=13, value=row['10TL Tutar']).border = border
+        ws2.cell(row=row_idx, column=14, value=row['Risk Puan']).border = border
+        ws2.cell(row=row_idx, column=15, value=row['Risk']).border = border
+        ws2.cell(row=row_idx, column=16, value=row['Risk Nedenleri']).border = border
+    
+    auto_adjust_column_width(ws2)
+    
+    # Excel çıktısı
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return output.getvalue()
+
+
 def calculate_store_risk(df, internal_df, chronic_df, cigarette_df):
     """Mağaza risk seviyesi"""
     toplam_satis = df['Satış Tutarı'].sum()
@@ -982,25 +1308,146 @@ if uploaded_file is not None:
             'tarih': str(df['Envanter Tarihi'].iloc[0])[:10] if 'Envanter Tarihi' in df.columns else '',
         }
         
-        # Mağaza seçimi
-        if len(magazalar) > 1:
-            # Kod + isim listesi oluştur
-            magaza_options = [magaza_isimleri[m] for m in magazalar]
-            selected_option = st.selectbox("🏪 Mağaza Seçin", magaza_options)
-            # Seçilen option'dan kodu çıkar
-            selected_str = selected_option.split(" - ")[0]
-            # Orijinal tipte bul
-            selected = None
-            for m in magazalar:
-                if str(m) == selected_str:
-                    selected = m
-                    break
-            if selected is None:
-                selected = magazalar[0]
-            df_display = df[df['Mağaza Kodu'] == selected].copy()
-            magaza_adi = df_display['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_display.columns and len(df_display) > 0 else ''
+        # Kasa aktivitesi kodlarını yükle
+        kasa_kodlari = load_kasa_activity_codes()
+        
+        # ========== BÖLGE ÖZETİ MODU ==========
+        if analysis_mode == "🌍 Bölge Özeti":
+            st.subheader(f"🌍 Bölge Özeti - {len(magazalar)} Mağaza")
+            
+            with st.spinner("Tüm mağazalar analiz ediliyor..."):
+                region_df = analyze_region(df, kasa_kodlari)
+            
+            if len(region_df) == 0:
+                st.warning("Analiz edilecek mağaza bulunamadı!")
+            else:
+                # Bölge toplamları
+                toplam_satis = region_df['Satış'].sum()
+                toplam_fark = region_df['Fark'].sum()
+                toplam_fire = region_df['Fire'].sum()
+                genel_oran = abs(toplam_fark) / toplam_satis * 100 if toplam_satis > 0 else 0
+                
+                # Risk dağılımı
+                kritik_sayisi = len(region_df[region_df['Risk'].str.contains('KRİTİK')])
+                riskli_sayisi = len(region_df[region_df['Risk'].str.contains('RİSKLİ')])
+                dikkat_sayisi = len(region_df[region_df['Risk'].str.contains('DİKKAT')])
+                temiz_sayisi = len(region_df[region_df['Risk'].str.contains('TEMİZ')])
+                
+                # Üst metrikler
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("💰 Toplam Satış", f"{toplam_satis/1_000_000:.1f}M TL")
+                with col2:
+                    st.metric("📉 Toplam Fark", f"{toplam_fark:,.0f} TL")
+                with col3:
+                    st.metric("🔥 Toplam Fire", f"{toplam_fire:,.0f} TL")
+                with col4:
+                    st.metric("📊 Genel Oran", f"%{genel_oran:.2f}")
+                
+                # Risk dağılımı
+                st.markdown("### 📊 Risk Dağılımı")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    if kritik_sayisi > 0:
+                        st.markdown(f'<div class="risk-kritik">🔴 KRİTİK: {kritik_sayisi}</div>', unsafe_allow_html=True)
+                    else:
+                        st.metric("🔴 KRİTİK", kritik_sayisi)
+                with col2:
+                    if riskli_sayisi > 0:
+                        st.markdown(f'<div class="risk-riskli">🟠 RİSKLİ: {riskli_sayisi}</div>', unsafe_allow_html=True)
+                    else:
+                        st.metric("🟠 RİSKLİ", riskli_sayisi)
+                with col3:
+                    if dikkat_sayisi > 0:
+                        st.markdown(f'<div class="risk-dikkat">🟡 DİKKAT: {dikkat_sayisi}</div>', unsafe_allow_html=True)
+                    else:
+                        st.metric("🟡 DİKKAT", dikkat_sayisi)
+                with col4:
+                    st.markdown(f'<div class="risk-temiz">🟢 TEMİZ: {temiz_sayisi}</div>', unsafe_allow_html=True)
+                
+                # Sekmeler
+                tabs = st.tabs(["📋 Sıralama", "🔴 Kritik", "🟠 Riskli", "🚬 Sigara", "📊 Detay", "📥 İndir"])
+                
+                with tabs[0]:
+                    st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
+                    display_cols = ['Mağaza Kodu', 'Mağaza Adı', 'Satış', 'Fark', 'Kayıp %', 'Risk', 'Risk Nedenleri']
+                    display_df = region_df[display_cols].copy()
+                    display_df['Satış'] = display_df['Satış'].apply(lambda x: f"{x:,.0f}")
+                    display_df['Fark'] = display_df['Fark'].apply(lambda x: f"{x:,.0f}")
+                    display_df['Kayıp %'] = display_df['Kayıp %'].apply(lambda x: f"%{x:.1f}")
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+                with tabs[1]:
+                    st.subheader("🔴 Kritik Mağazalar")
+                    kritik_df = region_df[region_df['Risk'].str.contains('KRİTİK')]
+                    if len(kritik_df) > 0:
+                        for _, row in kritik_df.iterrows():
+                            st.error(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
+                                    f"Kayıp: %{row['Kayıp %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
+                                    f"**Neden:** {row['Risk Nedenleri']}")
+                    else:
+                        st.success("Kritik mağaza yok! 🎉")
+                
+                with tabs[2]:
+                    st.subheader("🟠 Riskli Mağazalar")
+                    riskli_df = region_df[region_df['Risk'].str.contains('RİSKLİ')]
+                    if len(riskli_df) > 0:
+                        for _, row in riskli_df.iterrows():
+                            st.warning(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
+                                      f"Kayıp: %{row['Kayıp %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
+                                      f"**Neden:** {row['Risk Nedenleri']}")
+                    else:
+                        st.success("Riskli mağaza yok! 🎉")
+                
+                with tabs[3]:
+                    st.subheader("🚬 Sigara Açığı Olan Mağazalar")
+                    sigara_df = region_df[region_df['Sigara'] > 0].sort_values('Sigara', ascending=False)
+                    if len(sigara_df) > 0:
+                        st.error(f"⚠️ {len(sigara_df)} mağazada sigara açığı var!")
+                        for _, row in sigara_df.iterrows():
+                            st.error(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**: {row['Sigara']} ürün sigara açığı")
+                    else:
+                        st.success("Sigara açığı olan mağaza yok! 🎉")
+                
+                with tabs[4]:
+                    st.subheader("📊 Tüm Detaylar")
+                    st.dataframe(region_df, use_container_width=True, hide_index=True)
+                
+                with tabs[5]:
+                    st.subheader("📥 Bölge Raporu İndir")
+                    
+                    excel_data = create_region_excel_report(region_df, df, kasa_kodlari, params)
+                    
+                    st.download_button(
+                        label="📥 Bölge Özet Raporu (Excel)",
+                        data=excel_data,
+                        file_name=f"BOLGE_OZET_{params.get('donem', '')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+        
+        # ========== TEK MAĞAZA MODU ==========
         else:
-            selected = magazalar[0]
+            # Mağaza seçimi
+            if len(magazalar) > 1:
+                # Kod + isim listesi oluştur
+                magaza_options = [magaza_isimleri[m] for m in magazalar]
+                selected_option = st.selectbox("🏪 Mağaza Seçin", magaza_options)
+                # Seçilen option'dan kodu çıkar
+                selected_str = selected_option.split(" - ")[0]
+                # Orijinal tipte bul
+                selected = None
+                for m in magazalar:
+                    if str(m) == selected_str:
+                        selected = m
+                        break
+                if selected is None:
+                    selected = magazalar[0]
+                df_display = df[df['Mağaza Kodu'] == selected].copy()
+                magaza_adi = df_display['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_display.columns and len(df_display) > 0 else ''
+            else:
+                selected = magazalar[0]
+                df_display = df.copy()
+                magaza_adi = df['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df.columns and len(df) > 0 else ''
             df_display = df.copy()
             magaza_adi = df['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df.columns and len(df) > 0 else ''
         
