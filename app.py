@@ -18,6 +18,7 @@ USERS = {
     "sm2": "Sm22025!",
     "sm3": "Sm32025!",
     "sm4": "Sm42025!",
+    "sma": "Sma2025!",
 }
 
 def login():
