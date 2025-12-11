@@ -14,10 +14,10 @@ st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon=
 # ==================== GİRİŞ SİSTEMİ ====================
 USERS = {
     "ziya": "Gm2025!",
-    "sm1": "Sm2025!",
-    "sm2": "Sm2025!",
-    "sm3": "Sm2025!",
-    "sm4": "Sm2025!",
+    "sm1": "Sm12025!",
+    "sm2": "Sm22025!",
+    "sm3": "Sm32025!",
+    "sm4": "Sm42025!",
 }
 
 def login():
