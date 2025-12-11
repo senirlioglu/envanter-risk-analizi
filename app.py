@@ -51,15 +51,17 @@ def login():
 
 login()
 
-# Çıkış butonu sidebar'da
-with st.sidebar:
+# ==================== ANA UYGULAMA ====================
+
+# Çıkış butonu sağ üstte
+col_title, col_user = st.columns([4, 1])
+with col_title:
+    st.title("🔍 Envanter Risk Analizi")
+with col_user:
     st.markdown(f"👤 **{st.session_state.user.upper()}**")
-    if st.button("🚪 Çıkış"):
+    if st.button("🚪 Çıkış", key="logout_btn"):
         st.session_state.user = None
         st.rerun()
-    st.divider()
-
-# ==================== ANA UYGULAMA ====================
 
 # Mobil uyumlu CSS
 st.markdown("""
@@ -80,8 +82,6 @@ st.markdown("""
     .stDataFrame { overflow-x: auto; }
 </style>
 """, unsafe_allow_html=True)
-
-st.title("🔍 Envanter Risk Analizi")
 
 # Mod seçimi
 analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti"], horizontal=True)
