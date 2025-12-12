@@ -593,9 +593,10 @@ def detect_external_theft(df):
 
 def check_kasa_activity_products(df, kasa_kodlari):
     """
-    10 TL Ürünleri Ürünleri Kontrolü
+    10 TL Ürünleri Kontrolü
     Fiyat değişikliği olan ürünlerde manipülasyon riski
     Toplam adet ve tutar etkisini hesapla
+    FORMÜL: Fark + Kısmi (Önceki dahil değil)
     """
     results = []
     
@@ -610,16 +611,14 @@ def check_kasa_activity_products(df, kasa_kodlari):
         
         if kod_str in kasa_kodlari:
             eslesen_urun += 1
-            fark = row['Fark Miktarı']
-            kismi = row['Kısmi Envanter Miktarı']
-            onceki = row['Önceki Fark Miktarı']
-            toplam = fark + kismi + onceki
+            fark = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
+            kismi = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
+            toplam = fark + kismi  # Önceki dahil değil!
             
-            # Tutar hesabı - Fark + Kısmi + Önceki tutarları
+            # Tutar hesabı - Fark + Kısmi tutarları
             fark_tutari = row.get('Fark Tutarı', 0) or 0
             kismi_tutari = row.get('Kısmi Envanter Tutarı', 0) or 0
-            onceki_tutari = row.get('Önceki Fark Tutarı', 0) or 0
-            urun_toplam_tutar = fark_tutari + kismi_tutari + onceki_tutari
+            urun_toplam_tutar = fark_tutari + kismi_tutari  # Önceki dahil değil!
             
             toplam_adet += toplam
             toplam_tutar += urun_toplam_tutar
@@ -635,7 +634,6 @@ def check_kasa_activity_products(df, kasa_kodlari):
                     'Malzeme Adı': row.get('Malzeme Adı', ''),
                     'Fark': fark,
                     'Kısmi': kismi,
-                    'Önceki': onceki,
                     'TOPLAM': toplam,
                     'Tutar': urun_toplam_tutar,
                     'Durum': durum
@@ -965,7 +963,7 @@ def create_region_excel_report(region_df, df_all, kasa_kodlari, params):
     ws['A16'] = "MAĞAZA SIRALAMASI (Risk Puanına Göre)"
     ws['A16'].font = Font(bold=True, size=11)
     
-    headers = ['Mağaza', 'Adı', 'Satış', 'Fark', 'Kayıp %', 'İç Hırs.', 'Sigara', 'Kr.Açık', 'Risk', 'Neden']
+    headers = ['Mağaza', 'Adı', 'Satış', 'Fark', 'Toplam %', 'İç Hırs.', 'Sigara', 'Kr.Açık', 'Risk', 'Neden']
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=17, column=col, value=header)
         cell.font = header_font
@@ -977,7 +975,7 @@ def create_region_excel_report(region_df, df_all, kasa_kodlari, params):
         ws.cell(row=row_idx, column=2, value=row['Mağaza Adı'][:25]).border = border
         ws.cell(row=row_idx, column=3, value=f"{row['Satış']:,.0f}").border = border
         ws.cell(row=row_idx, column=4, value=f"{row['Fark']:,.0f}").border = border
-        ws.cell(row=row_idx, column=5, value=f"%{row['Kayıp %']:.1f}").border = border
+        ws.cell(row=row_idx, column=5, value=f"%{row['Toplam %']:.1f}").border = border
         ws.cell(row=row_idx, column=6, value=row['İç Hırs.']).border = border
         ws.cell(row=row_idx, column=7, value=row['Sigara']).border = border
         ws.cell(row=row_idx, column=8, value=row['Kr.Açık']).border = border
@@ -1014,7 +1012,7 @@ def create_region_excel_report(region_df, df_all, kasa_kodlari, params):
     # ===== DETAY SHEET =====
     ws2 = wb.create_sheet("DETAY")
     
-    detail_headers = ['Mağaza Kodu', 'Mağaza Adı', 'Satış', 'Fark', 'Fire', 'Kayıp %', 
+    detail_headers = ['Mağaza Kodu', 'Mağaza Adı', 'Satış', 'Fark', 'Fire', 'Toplam %', 
                       'İç Hırs.', 'Kr.Açık', 'Kr.Fire', 'Sigara', 'Fire Man.', 
                       '10TL Adet', '10TL Tutar', 'Risk Puan', 'Risk', 'Risk Nedenleri']
     
@@ -1030,7 +1028,7 @@ def create_region_excel_report(region_df, df_all, kasa_kodlari, params):
         ws2.cell(row=row_idx, column=3, value=row['Satış']).border = border
         ws2.cell(row=row_idx, column=4, value=row['Fark']).border = border
         ws2.cell(row=row_idx, column=5, value=row['Fire']).border = border
-        ws2.cell(row=row_idx, column=6, value=row['Kayıp %']).border = border
+        ws2.cell(row=row_idx, column=6, value=row['Toplam %']).border = border
         ws2.cell(row=row_idx, column=7, value=row['İç Hırs.']).border = border
         ws2.cell(row=row_idx, column=8, value=row['Kr.Açık']).border = border
         ws2.cell(row=row_idx, column=9, value=row['Kr.Fire']).border = border
@@ -1542,7 +1540,7 @@ if uploaded_file is not None:
                         cols[5].write(f"{row['Günlük Fark']:,.0f}")
                         cols[6].write(f"{row['Fire']:,.0f}")
                         cols[7].write(f"{row['Günlük Fire']:,.0f}")
-                        cols[8].write(f"%{row['Kayıp %']:.1f}")
+                        cols[8].write(f"%{row['Toplam %']:.1f}")
                         cols[9].write(f"%{row['Fire %']:.1f}")
                         cols[10].write(f"{row['Sigara']}" if row['Sigara'] > 0 else "-")
                         cols[11].write(f"{row['Risk Puan']:.0f}")
@@ -1554,7 +1552,7 @@ if uploaded_file is not None:
                     if len(kritik_df) > 0:
                         for _, row in kritik_df.iterrows():
                             st.error(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
-                                    f"Kayıp: %{row['Kayıp %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
+                                    f"Kayıp: %{row['Toplam %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
                                     f"**Neden:** {row['Risk Nedenleri']}")
                     else:
                         st.success("Kritik mağaza yok! 🎉")
@@ -1565,7 +1563,7 @@ if uploaded_file is not None:
                     if len(riskli_df) > 0:
                         for _, row in riskli_df.iterrows():
                             st.warning(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
-                                      f"Kayıp: %{row['Kayıp %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
+                                      f"Kayıp: %{row['Toplam %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
                                       f"**Neden:** {row['Risk Nedenleri']}")
                     else:
                         st.success("Riskli mağaza yok! 🎉")
