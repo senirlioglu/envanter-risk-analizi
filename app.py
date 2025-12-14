@@ -673,15 +673,19 @@ def detect_cigarette_shortage(df):
     Sigara açığı - Tüm sigaraların TOPLAM (Fark + Kısmi + Önceki) değerine bakılır
     Eğer toplam < 0 ise sigara açığı var demektir
     """
-    sigara_keywords = ['sigara', 'sıgara', 'cigarette', 'tütün']
+    sigara_keywords = ['sigara', 'sıgara', 'cigarette', 'tütün', 'makaron']
     
-    # Sigara ürünlerini filtrele
-    sigara_mask = df.apply(lambda row: any(
-        kw in str(row.get('Ürün Grubu', '')).lower() or 
-        kw in str(row.get('Ana Grup', '')).lower() or
-        kw in str(row.get('Mal Grubu', '')).lower()
-        for kw in sigara_keywords
-    ), axis=1)
+    # Sigara ürünlerini filtrele - tüm olası sütunları kontrol et
+    def is_sigara(row):
+        check_cols = ['Ürün Grubu', 'Ana Grup', 'Mal Grubu', 'Mal Grubu Tanımı', 'Malzeme Adı']
+        for col in check_cols:
+            val = str(row.get(col, '')).lower()
+            for kw in sigara_keywords:
+                if kw in val:
+                    return True
+        return False
+    
+    sigara_mask = df.apply(is_sigara, axis=1)
     
     sigara_df = df[sigara_mask].copy()
     
@@ -1651,12 +1655,13 @@ if analysis_mode == "👔 SM Özet":
     user_sm = USER_SM_MAPPING.get(current_user)
     is_gm = current_user == "ziya"
     
-    # SM ve Dönem seçimi
-    col_sm, col_donem = st.columns(2)
+    # SM ve Dönem seçimi - aynı satırda
+    col_sm, col_donem = st.columns([1, 1])
+    
+    available_sms = get_available_sms_from_supabase()
+    available_periods = get_available_periods_from_supabase()
     
     with col_sm:
-        available_sms = get_available_sms_from_supabase()
-        
         if is_gm:
             # GM tüm SM'leri görebilir + TÜMÜ seçeneği
             if available_sms:
@@ -1675,11 +1680,11 @@ if analysis_mode == "👔 SM Özet":
                 selected_sm_option = None
                 display_sm = None
         elif user_sm:
-            # SM kendi verilerini görür (dropdown yok, otomatik)
+            # SM kendi verilerini görür (sadece kendi ismi gösterilir)
             selected_sm = user_sm
             selected_sm_option = user_sm
             display_sm = user_sm
-            st.info(f"👔 **{user_sm}**")
+            st.selectbox("👔 Satış Müdürü", [user_sm], disabled=True)
         else:
             # Asistan veya tanımsız - SM seçebilir
             if available_sms:
@@ -1693,7 +1698,6 @@ if analysis_mode == "👔 SM Özet":
                 display_sm = None
     
     with col_donem:
-        available_periods = get_available_periods_from_supabase()
         if available_periods:
             selected_periods = st.multiselect("📅 Dönem", available_periods, default=available_periods[:1])
         else:
@@ -1786,22 +1790,41 @@ if analysis_mode == "👔 SM Özet":
                         col1, col2, col3 = st.columns([2, 4, 1])
                         
                         with col1:
-                            risk_class = row.get('Risk Class', 'temiz')
+                            # Risk seviyesine göre renk
+                            risk_text = row.get('Risk', '')
+                            if 'KRİTİK' in str(risk_text):
+                                bg_color = '#ff4444'
+                            elif 'RİSKLİ' in str(risk_text):
+                                bg_color = '#ff8800'
+                            elif 'DİKKAT' in str(risk_text):
+                                bg_color = '#ffcc00'
+                            else:
+                                bg_color = '#00cc66'
+                            
+                            text_color = 'white' if bg_color != '#ffcc00' else 'black'
+                            
                             st.markdown(f"""
-                            <div class='risk-{risk_class}' style='padding: 15px;'>
-                                <h3 style='margin:0;'>{row['Mağaza Kodu']}</h3>
+                            <div style='background-color: {bg_color}; color: {text_color}; padding: 15px; border-radius: 5px; text-align: center;'>
+                                <h3 style='margin:0; color: {text_color};'>{row['Mağaza Kodu']}</h3>
                                 <small>{str(row['Mağaza Adı'])[:20]}</small><br>
                                 <b>Risk: {row['Risk Puan']:.0f}</b>
                             </div>
                             """, unsafe_allow_html=True)
                         
                         with col2:
+                            # Sigara değerini al
+                            sigara_val = row.get('Sigara', 0)
+                            if pd.isna(sigara_val):
+                                sigara_val = 0
+                            
                             m1, m2, m3, m4, m5 = st.columns(5)
-                            m1.metric("🚬 Sigara", f"{row['Sigara']:.0f}")
+                            m1.metric("🚬 Sigara", f"{sigara_val:.0f}")
                             m2.metric("🔒 İç Hırs.", f"{row['İç Hırs.']:.0f}")
-                            m3.metric("📉 Fark", f"{row['Fark']:,.0f}", f"%{row['Fark %']:.1f}")
-                            m4.metric("🔥 Fire", f"{row['Fire']:,.0f}", f"%{row['Fire %']:.1f}")
-                            m5.metric("📊 Toplam", f"{row['Toplam Açık']:,.0f}", f"%{row['Toplam %']:.1f}")
+                            
+                            # Fark, Fire, Toplam - delta_color='inverse' ile kırmızı göster
+                            m3.metric("📉 Fark", f"{row['Fark']:,.0f}₺", f"%{row['Fark %']:.1f}", delta_color="inverse")
+                            m4.metric("🔥 Fire", f"{row['Fire']:,.0f}₺", f"%{row['Fire %']:.1f}", delta_color="inverse")
+                            m5.metric("📊 Toplam", f"{row['Toplam Açık']:,.0f}₺", f"%{row['Toplam %']:.1f}", delta_color="inverse")
                             
                             nedenler = row.get('Risk Nedenleri', '-') if hasattr(row, 'get') else (row['Risk Nedenleri'] if 'Risk Nedenleri' in row.index else '-')
                             if nedenler and nedenler != "-":
