@@ -1748,17 +1748,37 @@ if analysis_mode == "👔 SM Özet":
                             # İndirme butonu
                             mag_df = df[df['Mağaza Kodu'] == row['Mağaza Kodu']]
                             if len(mag_df) > 0:
+                                # Analizleri yap
+                                internal_df = detect_internal_theft(mag_df)
+                                chronic_df = detect_chronic_products(mag_df)
+                                chronic_fire_df = detect_chronic_fire(mag_df)
+                                cigarette_df = detect_cigarette_shortage(mag_df)
+                                external_df = detect_external_theft(mag_df)
+                                family_df = find_product_families(mag_df)
+                                fire_manip_df = detect_fire_manipulation(mag_df)
+                                kasa_activity_df = check_kasa_activity_products(mag_df, kasa_kodlari)[0]
+                                
+                                # Top 20 için kodları hazırla
+                                internal_codes = set(internal_df['Malzeme Kodu'].astype(str).tolist()) if len(internal_df) > 0 else set()
+                                chronic_codes = set(chronic_df['Malzeme Kodu'].astype(str).tolist()) if len(chronic_df) > 0 else set()
+                                family_balanced_codes = set()
+                                if len(family_df) > 0 and 'Sonuç' in family_df.columns:
+                                    balanced = family_df[family_df['Sonuç'].str.contains('KARIŞIKLIK', na=False)]
+                                    # family_balanced_codes = ... (karmaşık, boş bırak)
+                                
+                                top20_df = create_top_20_risky(mag_df, internal_codes, chronic_codes, family_balanced_codes)
+                                
                                 report_data = create_excel_report(
                                     mag_df,
-                                    detect_internal_theft(mag_df),
-                                    detect_chronic_products(mag_df),
-                                    detect_chronic_fire(mag_df),
-                                    detect_cigarette_shortage(mag_df),
-                                    detect_external_theft(mag_df),
-                                    detect_family_anomaly(mag_df),
-                                    detect_fire_manipulation(mag_df),
-                                    check_kasa_activity_products(mag_df, kasa_kodlari)[0],
-                                    create_top20_risk(mag_df),
+                                    internal_df,
+                                    chronic_df,
+                                    chronic_fire_df,
+                                    cigarette_df,
+                                    external_df,
+                                    family_df,
+                                    fire_manip_df,
+                                    kasa_activity_df,
+                                    top20_df,
                                     [],
                                     {},
                                     row['Mağaza Kodu'],
