@@ -224,10 +224,11 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
     """Supabase'den veri çek ve DataFrame'e çevir - Optimize edilmiş"""
     try:
         all_data = []
-        batch_size = 5000  # Daha büyük batch
+        batch_size = 1000  # Supabase max limit
         offset = 0
+        max_iterations = 500  # Sonsuz döngü koruması (500K satır max)
         
-        # Sadece gerekli sütunları çek (44 yerine 25 sütun)
+        # Sadece gerekli sütunları çek
         required_columns = ','.join([
             'magaza_kodu', 'magaza_tanim', 'satis_muduru', 'bolge_sorumlusu',
             'depolama_kosulu_grubu', 'envanter_donemi', 'envanter_tarihi', 'envanter_baslangic_tarihi',
@@ -237,9 +238,12 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             'satis_miktari', 'satis_hasilati', 'iptal_satir_miktari'
         ])
         
-        while True:
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
+            
             # Sorgu oluştur - sadece gerekli sütunlar
-            query = supabase.table('envanter_veri').select(required_columns)
+            query = supabase.table('envanter_veri').select(required_columns, count='exact')
             
             if satis_muduru:
                 query = query.eq('satis_muduru', satis_muduru)
@@ -248,7 +252,7 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             if donemler and len(donemler) > 0:
                 query = query.in_('envanter_donemi', donemler)
             
-            # Pagination
+            # Pagination - limit ve offset
             query = query.range(offset, offset + batch_size - 1)
             
             result = query.execute()
@@ -1070,21 +1074,27 @@ def analyze_region(df, kasa_kodlari):
         kronik_fire = pd.Series(0, index=magazalar)
     
     # 4. Sigara Açığı - Sigara ürünlerinin toplam farkı
-    sigara_keywords = ['sigara', 'sıgara', 'makaron', 'tütün']
-    if 'Mal Grubu Tanımı' in df.columns:
-        sigara_mask = df['Mal Grubu Tanımı'].fillna('').str.lower().str.contains('|'.join(sigara_keywords))
-    elif 'Malzeme Adı' in df.columns:
-        sigara_mask = df['Malzeme Adı'].fillna('').str.lower().str.contains('|'.join(sigara_keywords))
-    else:
-        sigara_mask = pd.Series(False, index=df.index)
+    sigara_keywords = ['sigara', 'sıgara', 'makaron', 'tütün', 'cigarette']
     
-    sigara_fark = df[sigara_mask].groupby('Mağaza Kodu').agg({
-        'Fark Miktarı': 'sum',
-        'Kısmi Envanter Miktarı': 'sum',
-        'Önceki Fark Miktarı': 'sum'
-    })
-    if len(sigara_fark) > 0:
-        sigara_fark['Toplam'] = sigara_fark.sum(axis=1)
+    # Hem Mal Grubu Tanımı hem Malzeme Adı'nda ara
+    sigara_mask = pd.Series(False, index=df.index)
+    
+    for col in ['Mal Grubu Tanımı', 'Malzeme Adı']:
+        if col in df.columns:
+            col_lower = df[col].fillna('').astype(str).str.lower()
+            for kw in sigara_keywords:
+                sigara_mask = sigara_mask | col_lower.str.contains(kw, na=False, regex=False)
+    
+    # Sigara ürünlerinin fark toplamı
+    sigara_df = df[sigara_mask].copy()
+    if len(sigara_df) > 0:
+        sigara_fark = sigara_df.groupby('Mağaza Kodu').agg({
+            'Fark Miktarı': 'sum',
+            'Kısmi Envanter Miktarı': 'sum'
+        })
+        sigara_fark['Fark Miktarı'] = sigara_fark['Fark Miktarı'].fillna(0)
+        sigara_fark['Kısmi Envanter Miktarı'] = sigara_fark['Kısmi Envanter Miktarı'].fillna(0)
+        sigara_fark['Toplam'] = sigara_fark['Fark Miktarı'] + sigara_fark['Kısmi Envanter Miktarı']
         sigara_fark['Sigara Açık'] = sigara_fark['Toplam'].apply(lambda x: abs(x) if x < 0 else 0)
     else:
         sigara_fark = pd.DataFrame({'Sigara Açık': []})
