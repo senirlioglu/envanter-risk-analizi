@@ -219,16 +219,27 @@ def get_available_sms_from_supabase():
     return []
 
 
+@st.cache_data(ttl=300)  # 5 dakika cache
 def get_data_from_supabase(satis_muduru=None, donemler=None):
-    """Supabase'den veri çek ve DataFrame'e çevir - Pagination ile tüm veriyi al"""
+    """Supabase'den veri çek ve DataFrame'e çevir - Optimize edilmiş"""
     try:
         all_data = []
-        batch_size = 1000
+        batch_size = 5000  # Daha büyük batch
         offset = 0
         
+        # Sadece gerekli sütunları çek (44 yerine 25 sütun)
+        required_columns = ','.join([
+            'magaza_kodu', 'magaza_tanim', 'satis_muduru', 'bolge_sorumlusu',
+            'depolama_kosulu_grubu', 'envanter_donemi', 'envanter_tarihi', 'envanter_baslangic_tarihi',
+            'mal_grubu_tanimi', 'malzeme_kodu', 'malzeme_tanimi', 'satis_fiyati',
+            'fark_miktari', 'fark_tutari', 'kismi_envanter_miktari', 'kismi_envanter_tutari',
+            'fire_miktari', 'fire_tutari', 'onceki_fark_miktari', 'onceki_fire_miktari',
+            'satis_miktari', 'satis_hasilati', 'iptal_satir_miktari'
+        ])
+        
         while True:
-            # Sorgu oluştur
-            query = supabase.table('envanter_veri').select('*')
+            # Sorgu oluştur - sadece gerekli sütunlar
+            query = supabase.table('envanter_veri').select(required_columns)
             
             if satis_muduru:
                 query = query.eq('satis_muduru', satis_muduru)
@@ -265,21 +276,13 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             'satis_muduru': 'Satış Müdürü',
             'bolge_sorumlusu': 'Bölge Sorumlusu',
             'depolama_kosulu_grubu': 'Depolama Koşulu Grubu',
-            'depolama_kosulu': 'Depolama Koşulu',
             'envanter_donemi': 'Envanter Dönemi',
             'envanter_tarihi': 'Envanter Tarihi',
             'envanter_baslangic_tarihi': 'Envanter Başlangıç Tarihi',
-            'urun_grubu_kodu': 'Ürün Grubu Kodu',
-            'urun_grubu_tanimi': 'Ürün Grubu',
-            'mal_grubu_kodu': 'Mal Grubu Kodu',
             'mal_grubu_tanimi': 'Mal Grubu Tanımı',
             'malzeme_kodu': 'Malzeme Kodu',
             'malzeme_tanimi': 'Malzeme Adı',
             'satis_fiyati': 'Satış Fiyatı',
-            'sayim_miktari': 'Sayım Miktarı',
-            'sayim_tutari': 'Sayım Tutarı',
-            'kaydi_miktar': 'Kaydi Miktar',
-            'kaydi_tutar': 'Kaydi Tutar',
             'fark_miktari': 'Fark Miktarı',
             'fark_tutari': 'Fark Tutarı',
             'kismi_envanter_miktari': 'Kısmi Envanter Miktarı',
@@ -287,19 +290,10 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             'fire_miktari': 'Fire Miktarı',
             'fire_tutari': 'Fire Tutarı',
             'onceki_fark_miktari': 'Önceki Fark Miktarı',
-            'onceki_fark_tutari': 'Önceki Fark Tutarı',
             'onceki_fire_miktari': 'Önceki Fire Miktarı',
-            'onceki_fire_tutari': 'Önceki Fire Tutarı',
             'satis_miktari': 'Satış Miktarı',
             'satis_hasilati': 'Satış Tutarı',
-            'iade_miktari': 'İade Miktarı',
-            'iade_tutari': 'İade Tutarı',
-            'iptal_fisteki_miktar': 'İptal Fişteki Miktar',
-            'iptal_fis_tutari': 'İptal Fiş Tutarı',
-            'iptal_gp_miktari': 'İptal GP Miktarı',
-            'iptal_gp_tutari': 'İptal GP Tutarı',
             'iptal_satir_miktari': 'İptal Satır Miktarı',
-            'iptal_satir_tutari': 'İptal Satır Tutarı',
         }
         
         df = df.rename(columns=reverse_mapping)
@@ -1011,67 +1005,129 @@ def generate_executive_summary(df, kasa_activity_df=None, kasa_summary=None):
 
 
 def analyze_region(df, kasa_kodlari):
-    """Bölge geneli analiz - tüm mağazaları karşılaştır"""
+    """Bölge geneli analiz - HIZLI VERSİYON (vektörel işlemler)"""
     
     magazalar = df['Mağaza Kodu'].dropna().unique().tolist()
-    results = []
     
-    for mag in magazalar:
-        df_mag = df[df['Mağaza Kodu'] == mag].copy()
+    if len(magazalar) == 0:
+        return pd.DataFrame()
+    
+    # Tüm mağazalar için temel metrikleri tek seferde hesapla (vektörel)
+    store_metrics = df.groupby('Mağaza Kodu').agg({
+        'Mağaza Adı': 'first',
+        'Bölge Sorumlusu': 'first',
+        'Satış Müdürü': 'first' if 'Satış Müdürü' in df.columns else 'first',
+        'Satış Tutarı': 'sum',
+        'Fark Tutarı': 'sum',
+        'Kısmi Envanter Tutarı': 'sum',
+        'Fire Tutarı': 'sum',
+        'Envanter Tarihi': 'first',
+        'Envanter Başlangıç Tarihi': 'first',
+    }).reset_index()
+    
+    # SM sütunu kontrol
+    if 'Satış Müdürü' not in df.columns:
+        store_metrics['Satış Müdürü'] = ''
+    
+    # Hesaplamalar
+    store_metrics['Fark'] = store_metrics['Fark Tutarı'].fillna(0) + store_metrics['Kısmi Envanter Tutarı'].fillna(0)
+    store_metrics['Fire'] = store_metrics['Fire Tutarı'].fillna(0)
+    store_metrics['Toplam Açık'] = store_metrics['Fark'] + store_metrics['Fire']
+    store_metrics['Satış'] = store_metrics['Satış Tutarı'].fillna(0)
+    
+    # Oranlar
+    store_metrics['Fark %'] = abs(store_metrics['Fark']) / store_metrics['Satış'] * 100
+    store_metrics['Fire %'] = abs(store_metrics['Fire']) / store_metrics['Satış'] * 100
+    store_metrics['Toplam %'] = abs(store_metrics['Toplam Açık']) / store_metrics['Satış'] * 100
+    store_metrics[['Fark %', 'Fire %', 'Toplam %']] = store_metrics[['Fark %', 'Fire %', 'Toplam %']].fillna(0)
+    
+    # Gün hesabı
+    try:
+        store_metrics['Gün'] = (pd.to_datetime(store_metrics['Envanter Tarihi']) - 
+                                pd.to_datetime(store_metrics['Envanter Başlangıç Tarihi'])).dt.days
+        store_metrics['Gün'] = store_metrics['Gün'].apply(lambda x: max(1, x) if pd.notna(x) else 1)
+    except:
+        store_metrics['Gün'] = 1
+    
+    store_metrics['Günlük Fark'] = store_metrics['Fark'] / store_metrics['Gün']
+    store_metrics['Günlük Fire'] = store_metrics['Fire'] / store_metrics['Gün']
+    
+    # ===== HIZLI RİSK ANALİZLERİ (vektörel) =====
+    
+    # 1. İç Hırsızlık - Satış Fiyatı >= 100 ve Fark < 0 olan ürün sayısı
+    if 'Satış Fiyatı' in df.columns:
+        ic_hirsizlik = df[(df['Satış Fiyatı'] >= 100) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
+    else:
+        ic_hirsizlik = pd.Series(0, index=magazalar)
+    
+    # 2. Kronik Açık - Önceki Fark < 0 ve Fark < 0 olan ürün sayısı
+    kronik = df[(df['Önceki Fark Miktarı'] < 0) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
+    
+    # 3. Kronik Fire - Önceki Fire < 0 ve Fire < 0 olan ürün sayısı  
+    if 'Önceki Fire Miktarı' in df.columns:
+        kronik_fire = df[(df['Önceki Fire Miktarı'] < 0) & (df['Fire Miktarı'] < 0)].groupby('Mağaza Kodu').size()
+    else:
+        kronik_fire = pd.Series(0, index=magazalar)
+    
+    # 4. Sigara Açığı - Sigara ürünlerinin toplam farkı
+    sigara_keywords = ['sigara', 'sıgara', 'makaron', 'tütün']
+    if 'Mal Grubu Tanımı' in df.columns:
+        sigara_mask = df['Mal Grubu Tanımı'].fillna('').str.lower().str.contains('|'.join(sigara_keywords))
+    elif 'Malzeme Adı' in df.columns:
+        sigara_mask = df['Malzeme Adı'].fillna('').str.lower().str.contains('|'.join(sigara_keywords))
+    else:
+        sigara_mask = pd.Series(False, index=df.index)
+    
+    sigara_fark = df[sigara_mask].groupby('Mağaza Kodu').agg({
+        'Fark Miktarı': 'sum',
+        'Kısmi Envanter Miktarı': 'sum',
+        'Önceki Fark Miktarı': 'sum'
+    })
+    if len(sigara_fark) > 0:
+        sigara_fark['Toplam'] = sigara_fark.sum(axis=1)
+        sigara_fark['Sigara Açık'] = sigara_fark['Toplam'].apply(lambda x: abs(x) if x < 0 else 0)
+    else:
+        sigara_fark = pd.DataFrame({'Sigara Açık': []})
+    
+    # 5. Fire Manipülasyonu - Fire > |Fark| olan ürün sayısı
+    fire_manip = df[abs(df['Fire Miktarı']) > abs(df['Fark Miktarı'].fillna(0) + df['Kısmi Envanter Miktarı'].fillna(0))].groupby('Mağaza Kodu').size()
+    
+    # 6. 10TL Ürünleri - Kasa aktivitesi kodları
+    kasa_set = set(str(k) for k in kasa_kodlari) if kasa_kodlari else set()
+    if len(kasa_set) > 0:
+        kasa_mask = df['Malzeme Kodu'].astype(str).isin(kasa_set)
+        kasa_agg = df[kasa_mask].groupby('Mağaza Kodu').agg({
+            'Fark Miktarı': 'sum',
+            'Kısmi Envanter Miktarı': 'sum',
+            'Fark Tutarı': 'sum',
+            'Kısmi Envanter Tutarı': 'sum'
+        })
+        if len(kasa_agg) > 0:
+            kasa_agg['10TL Adet'] = kasa_agg['Fark Miktarı'].fillna(0) + kasa_agg['Kısmi Envanter Miktarı'].fillna(0)
+            kasa_agg['10TL Tutar'] = kasa_agg['Fark Tutarı'].fillna(0) + kasa_agg['Kısmi Envanter Tutarı'].fillna(0)
+        else:
+            kasa_agg = pd.DataFrame({'10TL Adet': [], '10TL Tutar': []})
+    else:
+        kasa_agg = pd.DataFrame({'10TL Adet': [], '10TL Tutar': []})
+    
+    # Sonuçları birleştir
+    results = []
+    for _, row in store_metrics.iterrows():
+        mag = row['Mağaza Kodu']
         
-        if len(df_mag) == 0:
-            continue
+        # Risk değerlerini al
+        ic_hrs = ic_hirsizlik.get(mag, 0)
+        kr_acik = kronik.get(mag, 0)
+        kr_fire = kronik_fire.get(mag, 0)
+        sig_acik = sigara_fark.loc[mag, 'Sigara Açık'] if mag in sigara_fark.index else 0
+        fire_man = fire_manip.get(mag, 0)
+        kasa_adet = kasa_agg.loc[mag, '10TL Adet'] if mag in kasa_agg.index else 0
+        kasa_tutar = kasa_agg.loc[mag, '10TL Tutar'] if mag in kasa_agg.index else 0
         
-        # Mağaza adı ve BS
-        mag_adi = df_mag['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_mag.columns else ''
-        bs = df_mag['Bölge Sorumlusu'].iloc[0] if 'Bölge Sorumlusu' in df_mag.columns else ''
-        
-        # Gün hesabı
-        gun_sayisi = 1
-        try:
-            if 'Envanter Tarihi' in df_mag.columns and 'Envanter Başlangıç Tarihi' in df_mag.columns:
-                env_tarihi = pd.to_datetime(df_mag['Envanter Tarihi'].iloc[0])
-                env_baslangic = pd.to_datetime(df_mag['Envanter Başlangıç Tarihi'].iloc[0])
-                gun_sayisi = (env_tarihi - env_baslangic).days
-                if gun_sayisi <= 0:
-                    gun_sayisi = 1
-        except:
-            gun_sayisi = 1
-        
-        # Temel metrikler
-        toplam_satis = df_mag['Satış Tutarı'].sum()
-        
-        # Fark = Fark Tutarı + Kısmi Envanter Tutarı
-        fark_tutari = df_mag['Fark Tutarı'].fillna(0).sum()
-        kismi_tutari = df_mag['Kısmi Envanter Tutarı'].fillna(0).sum()
-        fark = fark_tutari + kismi_tutari
-        
-        # Fire = Fire Tutarı
-        fire = df_mag['Fire Tutarı'].fillna(0).sum()
-        
-        # Toplam Açık = Fark + Fire
-        toplam_acik = fark + fire
-        
-        # Oranlar
-        fark_oran = abs(fark) / toplam_satis * 100 if toplam_satis > 0 else 0
-        fire_oran = abs(fire) / toplam_satis * 100 if toplam_satis > 0 else 0
-        toplam_oran = abs(toplam_acik) / toplam_satis * 100 if toplam_satis > 0 else 0
-        
-        # Günlük hesaplar
-        gunluk_fark = fark / gun_sayisi
-        gunluk_fire = fire / gun_sayisi
-        
-        # Risk analizleri
-        internal_df = detect_internal_theft(df_mag)
-        chronic_df = detect_chronic_products(df_mag)
-        chronic_fire_df = detect_chronic_fire(df_mag)
-        cigarette_df = detect_cigarette_shortage(df_mag)
-        fire_manip_df = detect_fire_manipulation(df_mag)
-        kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
-        
-        # Risk puanı hesapla (ağırlıklı)
+        # Risk puanı hesapla
         risk_puan = 0
         risk_nedenler = []
+        toplam_oran = row['Toplam %']
         
         # Toplam oran bazlı risk
         if toplam_oran > 2:
@@ -1084,56 +1140,48 @@ def analyze_region(df, kasa_kodlari):
             risk_puan += 15
         
         # İç hırsızlık
-        if len(internal_df) > 50:
+        if ic_hrs > 50:
             risk_puan += 30
-            risk_nedenler.append(f"İç hırs. {len(internal_df)}")
-        elif len(internal_df) > 30:
+            risk_nedenler.append(f"İç hırs. {ic_hrs}")
+        elif ic_hrs > 30:
             risk_puan += 20
-            risk_nedenler.append(f"İç hırs. {len(internal_df)}")
-        elif len(internal_df) > 15:
+            risk_nedenler.append(f"İç hırs. {ic_hrs}")
+        elif ic_hrs > 15:
             risk_puan += 10
         
-        # Sigara açığı (kritik!) - Toplam bazlı
-        # cigarette_df boş değilse, içindeki son satırda toplam var
-        sigara_acik = 0
-        if len(cigarette_df) > 0 and 'Ürün Toplam' in cigarette_df.columns:
-            # Son satırdaki Net Toplam değerini al (negatif)
-            son_satir = cigarette_df.iloc[-1]
-            if son_satir['Malzeme Kodu'] == '*** TOPLAM ***':
-                sigara_acik = abs(son_satir['Ürün Toplam'])
-        
-        if sigara_acik > 5:
+        # Sigara açığı
+        if sig_acik > 5:
             risk_puan += 35
-            risk_nedenler.append(f"🚬 SİGARA {sigara_acik:.0f}")
-        elif sigara_acik > 0:
+            risk_nedenler.append(f"🚬 SİGARA {sig_acik:.0f}")
+        elif sig_acik > 0:
             risk_puan += 20
-            risk_nedenler.append(f"🚬 Sigara {sigara_acik:.0f}")
+            risk_nedenler.append(f"🚬 Sigara {sig_acik:.0f}")
         
         # Kronik açık
-        if len(chronic_df) > 100:
+        if kr_acik > 100:
             risk_puan += 15
-            risk_nedenler.append(f"Kronik {len(chronic_df)}")
-        elif len(chronic_df) > 50:
+            risk_nedenler.append(f"Kronik {kr_acik}")
+        elif kr_acik > 50:
             risk_puan += 10
         
         # Fire manipülasyonu
-        if len(fire_manip_df) > 10:
+        if fire_man > 10:
             risk_puan += 20
-            risk_nedenler.append(f"Fire man. {len(fire_manip_df)}")
-        elif len(fire_manip_df) > 5:
+            risk_nedenler.append(f"Fire man. {fire_man}")
+        elif fire_man > 5:
             risk_puan += 10
         
-        # 10 TL ürünleri (fazla = şüpheli)
-        if kasa_sum['toplam_adet'] > 20:
+        # 10 TL ürünleri
+        if kasa_adet > 20:
             risk_puan += 15
-            risk_nedenler.append(f"10TL +{kasa_sum['toplam_adet']:.0f}")
-        elif kasa_sum['toplam_adet'] > 10:
+            risk_nedenler.append(f"10TL +{kasa_adet:.0f}")
+        elif kasa_adet > 10:
             risk_puan += 10
         
-        # Risk puanını 100 ile sınırla
+        # Risk puanını sınırla
         risk_puan = min(risk_puan, 100)
         
-        # Risk seviyesi belirleme
+        # Risk seviyesi
         if risk_puan >= 60:
             risk_seviye = "🔴 KRİTİK"
         elif risk_puan >= 40:
@@ -1145,25 +1193,26 @@ def analyze_region(df, kasa_kodlari):
         
         results.append({
             'Mağaza Kodu': mag,
-            'Mağaza Adı': mag_adi,
-            'BS': bs,
-            'Satış': toplam_satis,
-            'Fark': fark,
-            'Fire': fire,
-            'Toplam Açık': toplam_acik,
-            'Fark %': fark_oran,
-            'Fire %': fire_oran,
-            'Toplam %': toplam_oran,
-            'Gün': gun_sayisi,
-            'Günlük Fark': gunluk_fark,
-            'Günlük Fire': gunluk_fire,
-            'İç Hırs.': len(internal_df),
-            'Kr.Açık': len(chronic_df),
-            'Kr.Fire': len(chronic_fire_df),
-            'Sigara': sigara_acik,
-            'Fire Man.': len(fire_manip_df),
-            '10TL Adet': kasa_sum['toplam_adet'],
-            '10TL Tutar': kasa_sum['toplam_tutar'],
+            'Mağaza Adı': row['Mağaza Adı'],
+            'SM': row.get('Satış Müdürü', ''),
+            'BS': row['Bölge Sorumlusu'],
+            'Satış': row['Satış'],
+            'Fark': row['Fark'],
+            'Fire': row['Fire'],
+            'Toplam Açık': row['Toplam Açık'],
+            'Fark %': row['Fark %'],
+            'Fire %': row['Fire %'],
+            'Toplam %': row['Toplam %'],
+            'Gün': row['Gün'],
+            'Günlük Fark': row['Günlük Fark'],
+            'Günlük Fire': row['Günlük Fire'],
+            'İç Hırs.': ic_hrs,
+            'Kr.Açık': kr_acik,
+            'Kr.Fire': kr_fire,
+            'Sigara': sig_acik,
+            'Fire Man.': fire_man,
+            '10TL Adet': kasa_adet,
+            '10TL Tutar': kasa_tutar,
             'Risk Puan': risk_puan,
             'Risk': risk_seviye,
             'Risk Nedenleri': " | ".join(risk_nedenler) if risk_nedenler else "-"
