@@ -220,24 +220,43 @@ def get_available_sms_from_supabase():
 
 
 def get_data_from_supabase(satis_muduru=None, donemler=None):
-    """Supabase'den veri çek ve DataFrame'e çevir"""
+    """Supabase'den veri çek ve DataFrame'e çevir - Pagination ile tüm veriyi al"""
     try:
-        # Sorgu oluştur
-        query = supabase.table('envanter_veri').select('*')
+        all_data = []
+        batch_size = 1000
+        offset = 0
         
-        if satis_muduru:
-            query = query.eq('satis_muduru', satis_muduru)
+        while True:
+            # Sorgu oluştur
+            query = supabase.table('envanter_veri').select('*')
+            
+            if satis_muduru:
+                query = query.eq('satis_muduru', satis_muduru)
+            
+            # Dönem filtresi
+            if donemler and len(donemler) > 0:
+                query = query.in_('envanter_donemi', donemler)
+            
+            # Pagination
+            query = query.range(offset, offset + batch_size - 1)
+            
+            result = query.execute()
+            
+            if not result.data or len(result.data) == 0:
+                break
+            
+            all_data.extend(result.data)
+            
+            # Son batch'te batch_size'dan az veri geldiyse bitir
+            if len(result.data) < batch_size:
+                break
+            
+            offset += batch_size
         
-        # Dönem filtresi
-        if donemler and len(donemler) > 0:
-            query = query.in_('envanter_donemi', donemler)
-        
-        result = query.execute()
-        
-        if not result.data:
+        if not all_data:
             return pd.DataFrame()
         
-        df = pd.DataFrame(result.data)
+        df = pd.DataFrame(all_data)
         
         # Sütun isimlerini geri çevir
         reverse_mapping = {
