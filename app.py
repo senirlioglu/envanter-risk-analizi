@@ -1637,16 +1637,60 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
 if analysis_mode == "👔 SM Özet":
     st.subheader("👔 SM Özet - Supabase'den")
     
+    # Kullanıcı -> SM eşleştirmesi
+    USER_SM_MAPPING = {
+        "sm1": "ALİ AKÇAY",
+        "sm2": "ŞADAN YURDAKUL",
+        "sm3": "VELİ GÖK",
+        "sm4": "GİZEM TOSUN",
+        "sma": None,  # Asistan - SM seçecek
+        "ziya": None,  # GM - tüm SM'leri görebilir
+    }
+    
+    current_user = st.session_state.user
+    user_sm = USER_SM_MAPPING.get(current_user)
+    is_gm = current_user == "ziya"
+    
     # SM ve Dönem seçimi
     col_sm, col_donem = st.columns(2)
     
     with col_sm:
         available_sms = get_available_sms_from_supabase()
-        if available_sms:
-            selected_sm = st.selectbox("👔 Satış Müdürü", available_sms)
+        
+        if is_gm:
+            # GM tüm SM'leri görebilir + TÜMÜ seçeneği
+            if available_sms:
+                sm_options = ["📊 TÜMÜ (Bölge)"] + available_sms
+                selected_sm_option = st.selectbox("👔 Satış Müdürü", sm_options)
+                
+                if selected_sm_option == "📊 TÜMÜ (Bölge)":
+                    selected_sm = None
+                    display_sm = "Bölge"
+                else:
+                    selected_sm = selected_sm_option
+                    display_sm = selected_sm
+            else:
+                st.warning("Henüz veri yüklenmemiş")
+                selected_sm = None
+                selected_sm_option = None
+                display_sm = None
+        elif user_sm:
+            # SM kendi verilerini görür (dropdown yok, otomatik)
+            selected_sm = user_sm
+            selected_sm_option = user_sm
+            display_sm = user_sm
+            st.info(f"👔 **{user_sm}**")
         else:
-            st.warning("Henüz veri yüklenmemiş")
-            selected_sm = None
+            # Asistan veya tanımsız - SM seçebilir
+            if available_sms:
+                selected_sm = st.selectbox("👔 Satış Müdürü", available_sms)
+                selected_sm_option = selected_sm
+                display_sm = selected_sm
+            else:
+                st.warning("Henüz veri yüklenmemiş")
+                selected_sm = None
+                selected_sm_option = None
+                display_sm = None
     
     with col_donem:
         available_periods = get_available_periods_from_supabase()
@@ -1655,7 +1699,7 @@ if analysis_mode == "👔 SM Özet":
         else:
             selected_periods = []
     
-    if selected_sm and selected_periods:
+    if selected_sm_option and selected_periods:
         with st.spinner("Veriler yükleniyor..."):
             df_supabase = get_data_from_supabase(satis_muduru=selected_sm, donemler=selected_periods)
         
@@ -1687,7 +1731,7 @@ if analysis_mode == "👔 SM Özet":
             kasa_kodlari = load_kasa_activity_codes()
             
             # Bölge Özeti ile aynı analiz
-            st.subheader(f"📊 {selected_sm} - {len(magazalar)} Mağaza")
+            st.subheader(f"📊 {display_sm} - {len(magazalar)} Mağaza")
             
             with st.spinner("Mağazalar analiz ediliyor..."):
                 region_df = analyze_region(df, kasa_kodlari)
