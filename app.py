@@ -1740,8 +1740,9 @@ if analysis_mode == "👔 SM Özet":
                             m4.metric("🔥 Fire", f"{row['Fire']:,.0f}", f"%{row['Fire %']:.1f}")
                             m5.metric("📊 Toplam", f"{row['Toplam Açık']:,.0f}", f"%{row['Toplam %']:.1f}")
                             
-                            if row['Nedenler'] != "-":
-                                st.caption(f"**Nedenler:** {row['Nedenler']}")
+                            nedenler = row.get('Risk Nedenleri', '-') if hasattr(row, 'get') else (row['Risk Nedenleri'] if 'Risk Nedenleri' in row.index else '-')
+                            if nedenler and nedenler != "-":
+                                st.caption(f"**Nedenler:** {nedenler}")
                         
                         with col3:
                             # İndirme butonu
