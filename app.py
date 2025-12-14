@@ -1124,6 +1124,9 @@ def analyze_region(df, kasa_kodlari):
         elif kasa_sum['toplam_adet'] > 10:
             risk_puan += 10
         
+        # Risk puanını 100 ile sınırla
+        risk_puan = min(risk_puan, 100)
+        
         # Risk seviyesi belirleme
         if risk_puan >= 60:
             risk_seviye = "🔴 KRİTİK"
@@ -1804,23 +1807,23 @@ if analysis_mode == "👔 SM Özet":
                     'Fark': 'sum',
                     'Fire': 'sum',
                     'Toplam Açık': 'sum',
-                    'Risk Puan': 'mean',
+                    'Risk Puan': 'sum',  # Toplam risk puanı
                     'Sigara': 'sum',
                     'İç Hırs.': 'sum'
                 }).reset_index()
-                bs_ozet.columns = ['BS', 'Mağaza', 'Satış', 'Fark', 'Fire', 'Toplam', 'Ort.Risk', 'Sigara', 'İç Hırs.']
+                bs_ozet.columns = ['BS', 'Mağaza', 'Satış', 'Fark', 'Fire', 'Toplam', 'Risk Puan', 'Sigara', 'İç Hırs.']
                 bs_ozet['Kayıp %'] = abs(bs_ozet['Toplam']) / bs_ozet['Satış'] * 100
-                bs_ozet = bs_ozet.sort_values('Kayıp %', ascending=False)
+                bs_ozet = bs_ozet.sort_values('Risk Puan', ascending=False)  # Risk puanına göre sırala
                 
-                # BS tablosu - kısa format
+                # BS tablosu - tam rakamlar ve risk puanı ile
                 for _, bs_row in bs_ozet.iterrows():
-                    col1, col2, col3, col4, col5, col6 = st.columns([2, 1, 1, 1, 1, 1])
-                    col1.write(f"**{bs_row['BS']}** ({bs_row['Mağaza']} mağ.)")
-                    col2.write(f"Satış: {bs_row['Satış']/1e6:.1f}M")
-                    col3.write(f"Fark: {bs_row['Fark']/1000:.0f}K")
-                    col4.write(f"Fire: {bs_row['Fire']/1000:.0f}K")
-                    col5.write(f"Kayıp: %{bs_row['Kayıp %']:.1f}")
-                    col6.write(f"🚬{bs_row['Sigara']:.0f} 🔒{bs_row['İç Hırs.']:.0f}")
+                    col1, col2, col3, col4, col5, col6 = st.columns([2.5, 1.5, 1.5, 1, 1, 1])
+                    col1.write(f"**{bs_row['BS']}** ({bs_row['Mağaza']:.0f} mağ.)")
+                    col2.write(f"Satış: {bs_row['Satış']/1e6:.1f}M | Fark: {bs_row['Fark']:,.0f}")
+                    col3.write(f"Fire: {bs_row['Fire']:,.0f}")
+                    col4.write(f"Kayıp: %{bs_row['Kayıp %']:.1f}")
+                    col5.write(f"🚬{bs_row['Sigara']:.0f} 🔒{bs_row['İç Hırs.']:.0f}")
+                    col6.write(f"**Risk: {bs_row['Risk Puan']:.0f}**")
                 
                 # Sekmeler - Bölge Özeti ile aynı
                 st.markdown("---")
