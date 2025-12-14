@@ -1236,10 +1236,11 @@ def analyze_region(df, kasa_kodlari):
 
 
 def aggregate_by_group(store_df, group_col):
-    """SM veya BS bazında gruplama"""
+    """SM veya BS bazında gruplama - Satış Ağırlıklı Ortalama Risk"""
     if group_col not in store_df.columns:
         return pd.DataFrame()
     
+    # Temel metrikler
     grouped = store_df.groupby(group_col).agg({
         'Mağaza Kodu': 'count',
         'Satış': 'sum',
@@ -1252,11 +1253,30 @@ def aggregate_by_group(store_df, group_col):
         '10TL Adet': 'sum',
         '10TL Tutar': 'sum',
         'Gün': 'sum',
-        'Risk Puan': 'sum'  # Toplam risk puanı
     }).reset_index()
     
     grouped.columns = [group_col, 'Mağaza Sayısı', 'Satış', 'Fark', 'Fire', 'Toplam Açık',
-                       'İç Hırs.', 'Kronik', 'Sigara', '10TL Adet', '10TL Tutar', 'Toplam Gün', 'Risk Puan']
+                       'İç Hırs.', 'Kronik', 'Sigara', '10TL Adet', '10TL Tutar', 'Toplam Gün']
+    
+    # Satış Ağırlıklı Ortalama Risk Puanı hesapla
+    # Formül: Σ(Mağaza Risk × Mağaza Satış) / Σ(Mağaza Satış)
+    for idx, row in grouped.iterrows():
+        grup_magazalar = store_df[store_df[group_col] == row[group_col]]
+        
+        # Ağırlıklı ortalama
+        toplam_agirlik = grup_magazalar['Satış'].sum()
+        if toplam_agirlik > 0:
+            agirlikli_risk = (grup_magazalar['Risk Puan'] * grup_magazalar['Satış']).sum() / toplam_agirlik
+        else:
+            agirlikli_risk = grup_magazalar['Risk Puan'].mean()
+        
+        grouped.at[idx, 'Risk Puan'] = agirlikli_risk
+        
+        # Kritik ve Riskli mağaza sayıları
+        kritik_count = len(grup_magazalar[grup_magazalar['Risk'].str.contains('KRİTİK')])
+        riskli_count = len(grup_magazalar[grup_magazalar['Risk'].str.contains('RİSKLİ')])
+        grouped.at[idx, 'Kritik Mağaza'] = kritik_count
+        grouped.at[idx, 'Riskli Mağaza'] = riskli_count
     
     # Oranlar
     grouped['Fark %'] = abs(grouped['Fark']) / grouped['Satış'] * 100
@@ -1274,9 +1294,7 @@ def aggregate_by_group(store_df, group_col):
     grouped['Günlük Fire'] = grouped['Fire'] / grouped['Toplam Gün']
     grouped['Günlük Fire'] = grouped['Günlük Fire'].fillna(0)
     
-    # Risk seviyesi (ortalama risk puanına göre)
-    grouped['Ort. Risk'] = grouped['Risk Puan'] / grouped['Mağaza Sayısı']
-    
+    # Risk seviyesi (ağırlıklı ortalama risk puanına göre)
     def get_risk_level(puan):
         if puan >= 60:
             return "🔴 KRİTİK"
@@ -1287,16 +1305,9 @@ def aggregate_by_group(store_df, group_col):
         else:
             return "🟢 TEMİZ"
     
-    grouped['Risk'] = grouped['Ort. Risk'].apply(get_risk_level)
+    grouped['Risk'] = grouped['Risk Puan'].apply(get_risk_level)
     
-    # Kritik mağaza sayısı
-    for idx, row in grouped.iterrows():
-        grup_magazalar = store_df[store_df[group_col] == row[group_col]]
-        kritik_count = len(grup_magazalar[grup_magazalar['Risk'].str.contains('KRİTİK')])
-        riskli_count = len(grup_magazalar[grup_magazalar['Risk'].str.contains('RİSKLİ')])
-        grouped.at[idx, 'Kritik Mağaza'] = kritik_count
-        grouped.at[idx, 'Riskli Mağaza'] = riskli_count
-    
+    # Risk puanına göre sırala (yüksekten düşüğe)
     grouped = grouped.sort_values('Risk Puan', ascending=False)
     
     return grouped
