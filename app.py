@@ -17,7 +17,7 @@ st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon=
 # ==================== CONFIG YÜKLEME ====================
 def load_risk_weights():
     """Risk ağırlıklarını config dosyasından yükle"""
-    config_path = os.path.join(os.path.dirname(__file__), 'config', 'weights.json')
+    config_path = os.path.join(os.path.dirname(__file__), 'weights.json')
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
