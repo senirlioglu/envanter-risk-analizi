@@ -7,14 +7,41 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from datetime import datetime
 import zipfile
+import json
+import os
 from supabase import create_client, Client
 
 # Mobil uyumlu sayfa ayarı
 st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon="📊")
 
+# ==================== CONFIG YÜKLEME ====================
+def load_risk_weights():
+    """Risk ağırlıklarını config dosyasından yükle"""
+    config_path = os.path.join(os.path.dirname(__file__), 'config', 'weights.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        # Varsayılan değerler
+        return {
+            "risk_weights": {
+                "toplam_oran": {"high": {"threshold": 2.0, "points": 40}, "medium": {"threshold": 1.5, "points": 25}, "low": {"threshold": 1.0, "points": 15}},
+                "ic_hirsizlik": {"high": {"threshold": 50, "points": 30}, "medium": {"threshold": 30, "points": 20}, "low": {"threshold": 15, "points": 10}},
+                "sigara": {"high": {"threshold": 5, "points": 35}, "low": {"threshold": 0, "points": 20}},
+                "kronik": {"high": {"threshold": 100, "points": 15}, "low": {"threshold": 50, "points": 10}},
+                "fire_manipulasyon": {"high": {"threshold": 10, "points": 20}, "low": {"threshold": 5, "points": 10}},
+                "kasa_10tl": {"high": {"threshold": 20, "points": 15}, "low": {"threshold": 10, "points": 10}}
+            },
+            "risk_levels": {"kritik": 60, "riskli": 40, "dikkat": 20},
+            "max_risk_score": 100
+        }
+
+RISK_CONFIG = load_risk_weights()
+
 # ==================== SUPABASE BAĞLANTISI ====================
-SUPABASE_URL = "https://tlcgcdiycgfxpxwzkwuf.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRsY2djZGl5Y2dmeHB4d3prd3VmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU2NDgwMjksImV4cCI6MjA4MTIyNDAyOX0.4GnWTvUmdLzqcP0v8MAqaNUQkYgk0S8qrw6nSPsz-t4"
+# Güvenlik: Credentials st.secrets'tan okunuyor
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://tlcgcdiycgfxpxwzkwuf.supabase.co")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 @st.cache_resource
 def get_supabase_client():
@@ -1122,6 +1149,12 @@ def analyze_region(df, kasa_kodlari):
     
     # Sonuçları birleştir
     results = []
+    
+    # Risk config'i al
+    rw = RISK_CONFIG.get('risk_weights', {})
+    rl = RISK_CONFIG.get('risk_levels', {})
+    max_score = RISK_CONFIG.get('max_risk_score', 100)
+    
     for _, row in store_metrics.iterrows():
         mag = row['Mağaza Kodu']
         
@@ -1134,69 +1167,75 @@ def analyze_region(df, kasa_kodlari):
         kasa_adet = kasa_agg.loc[mag, '10TL Adet'] if mag in kasa_agg.index else 0
         kasa_tutar = kasa_agg.loc[mag, '10TL Tutar'] if mag in kasa_agg.index else 0
         
-        # Risk puanı hesapla
+        # Risk puanı hesapla (config'den ağırlıklar)
         risk_puan = 0
         risk_nedenler = []
         toplam_oran = row['Toplam %']
         
         # Toplam oran bazlı risk
-        if toplam_oran > 2:
-            risk_puan += 40
+        to = rw.get('toplam_oran', {})
+        if toplam_oran > to.get('high', {}).get('threshold', 2):
+            risk_puan += to.get('high', {}).get('points', 40)
             risk_nedenler.append(f"Toplam %{toplam_oran:.1f}")
-        elif toplam_oran > 1.5:
-            risk_puan += 25
+        elif toplam_oran > to.get('medium', {}).get('threshold', 1.5):
+            risk_puan += to.get('medium', {}).get('points', 25)
             risk_nedenler.append(f"Toplam %{toplam_oran:.1f}")
-        elif toplam_oran > 1:
-            risk_puan += 15
+        elif toplam_oran > to.get('low', {}).get('threshold', 1):
+            risk_puan += to.get('low', {}).get('points', 15)
         
         # İç hırsızlık
-        if ic_hrs > 50:
-            risk_puan += 30
+        ih = rw.get('ic_hirsizlik', {})
+        if ic_hrs > ih.get('high', {}).get('threshold', 50):
+            risk_puan += ih.get('high', {}).get('points', 30)
             risk_nedenler.append(f"İç hırs. {ic_hrs}")
-        elif ic_hrs > 30:
-            risk_puan += 20
+        elif ic_hrs > ih.get('medium', {}).get('threshold', 30):
+            risk_puan += ih.get('medium', {}).get('points', 20)
             risk_nedenler.append(f"İç hırs. {ic_hrs}")
-        elif ic_hrs > 15:
-            risk_puan += 10
+        elif ic_hrs > ih.get('low', {}).get('threshold', 15):
+            risk_puan += ih.get('low', {}).get('points', 10)
         
         # Sigara açığı
-        if sig_acik > 5:
-            risk_puan += 35
+        sg = rw.get('sigara', {})
+        if sig_acik > sg.get('high', {}).get('threshold', 5):
+            risk_puan += sg.get('high', {}).get('points', 35)
             risk_nedenler.append(f"🚬 SİGARA {sig_acik:.0f}")
-        elif sig_acik > 0:
-            risk_puan += 20
+        elif sig_acik > sg.get('low', {}).get('threshold', 0):
+            risk_puan += sg.get('low', {}).get('points', 20)
             risk_nedenler.append(f"🚬 Sigara {sig_acik:.0f}")
         
         # Kronik açık
-        if kr_acik > 100:
-            risk_puan += 15
+        kr = rw.get('kronik', {})
+        if kr_acik > kr.get('high', {}).get('threshold', 100):
+            risk_puan += kr.get('high', {}).get('points', 15)
             risk_nedenler.append(f"Kronik {kr_acik}")
-        elif kr_acik > 50:
-            risk_puan += 10
+        elif kr_acik > kr.get('low', {}).get('threshold', 50):
+            risk_puan += kr.get('low', {}).get('points', 10)
         
         # Fire manipülasyonu
-        if fire_man > 10:
-            risk_puan += 20
+        fm = rw.get('fire_manipulasyon', {})
+        if fire_man > fm.get('high', {}).get('threshold', 10):
+            risk_puan += fm.get('high', {}).get('points', 20)
             risk_nedenler.append(f"Fire man. {fire_man}")
-        elif fire_man > 5:
-            risk_puan += 10
+        elif fire_man > fm.get('low', {}).get('threshold', 5):
+            risk_puan += fm.get('low', {}).get('points', 10)
         
         # 10 TL ürünleri
-        if kasa_adet > 20:
-            risk_puan += 15
+        kt = rw.get('kasa_10tl', {})
+        if kasa_adet > kt.get('high', {}).get('threshold', 20):
+            risk_puan += kt.get('high', {}).get('points', 15)
             risk_nedenler.append(f"10TL +{kasa_adet:.0f}")
-        elif kasa_adet > 10:
-            risk_puan += 10
+        elif kasa_adet > kt.get('low', {}).get('threshold', 10):
+            risk_puan += kt.get('low', {}).get('points', 10)
         
         # Risk puanını sınırla
-        risk_puan = min(risk_puan, 100)
+        risk_puan = min(risk_puan, max_score)
         
-        # Risk seviyesi
-        if risk_puan >= 60:
+        # Risk seviyesi (config'den eşikler)
+        if risk_puan >= rl.get('kritik', 60):
             risk_seviye = "🔴 KRİTİK"
-        elif risk_puan >= 40:
+        elif risk_puan >= rl.get('riskli', 40):
             risk_seviye = "🟠 RİSKLİ"
-        elif risk_puan >= 20:
+        elif risk_puan >= rl.get('dikkat', 20):
             risk_seviye = "🟡 DİKKAT"
         else:
             risk_seviye = "🟢 TEMİZ"
