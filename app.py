@@ -781,21 +781,30 @@ def detect_cigarette_shortage(df):
     Sigara açığı - Tüm sigaraların TOPLAM (Fark + Kısmi + Önceki) değerine bakılır
     Eğer toplam < 0 ise sigara açığı var demektir
     """
-    # NOT: "makaron" tek başına aranmıyor çünkü "MAKARON JEL KALEM" gibi ürünler var
-    sigara_keywords = ['sigara', 'sıgara', 'cigarette', 'tütün']
-    sigara_makaron_keywords = ['sigara makaron', 'tütün makaron', 'sarma makaron']
+    # Türkçe karakter normalize fonksiyonu
+    def normalize_turkish(text):
+        if pd.isna(text):
+            return ''
+        text = str(text).upper()
+        replacements = {'İ': 'I', 'Ş': 'S', 'Ğ': 'G', 'Ü': 'U', 'Ö': 'O', 'Ç': 'C',
+                       'ı': 'I', 'ş': 'S', 'ğ': 'G', 'ü': 'U', 'ö': 'O', 'ç': 'C'}
+        for tr_char, en_char in replacements.items():
+            text = text.replace(tr_char, en_char)
+        return text.strip()
     
-    # Sigara ürünlerini filtrele - tüm olası sütunları kontrol et
+    # Sigara ürünlerini filtrele
     def is_sigara(row):
-        check_cols = ['Ürün Grubu', 'Ana Grup', 'Mal Grubu', 'Mal Grubu Tanımı', 'Malzeme Adı']
+        # Öncelikle Mal Grubu Tanımı'na bak (en güvenilir)
+        mal_grubu = normalize_turkish(row.get('Mal Grubu Tanımı', ''))
+        if mal_grubu == 'SIGARA':
+            return True
+        
+        # Yedek kontrol - diğer sütunlarda sigara kelimesi ara
+        sigara_keywords = ['SIGARA', 'CIGARETTE', 'TUTUN']
+        check_cols = ['Mal Grubu Tanımı', 'Malzeme Adı']
         for col in check_cols:
-            val = str(row.get(col, '')).lower()
-            # Normal sigara kelimeleri
+            val = normalize_turkish(row.get(col, ''))
             for kw in sigara_keywords:
-                if kw in val:
-                    return True
-            # Makaron sadece sigara/tütün ile birlikteyse
-            for kw in sigara_makaron_keywords:
                 if kw in val:
                     return True
         return False
