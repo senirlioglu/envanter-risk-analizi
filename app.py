@@ -2744,9 +2744,11 @@ elif analysis_mode == "🌍 GM Özet":
                 dikkat_sayisi = len(region_df[region_df['Risk'].str.contains('DİKKAT')])
                 temiz_sayisi = len(region_df[region_df['Risk'].str.contains('TEMİZ')])
                 
-                # 10TL Özet
-                toplam_10tl_adet = region_df['10TL Adet'].sum()
-                toplam_10tl_tutar = region_df['10TL Tutar'].sum()
+                # 10TL Özet (VIEW: Kasa Adet/Tutar, analyze_region: 10TL Adet/Tutar)
+                kasa_adet_col = 'Kasa Adet' if 'Kasa Adet' in region_df.columns else '10TL Adet'
+                kasa_tutar_col = 'Kasa Tutar' if 'Kasa Tutar' in region_df.columns else '10TL Tutar'
+                toplam_10tl_adet = region_df[kasa_adet_col].sum() if kasa_adet_col in region_df.columns else 0
+                toplam_10tl_tutar = region_df[kasa_tutar_col].sum() if kasa_tutar_col in region_df.columns else 0
                 
                 # ========== GÖRÜNÜM ==========
                 st.markdown("---")
