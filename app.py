@@ -231,66 +231,12 @@ def save_to_supabase(df_original):
 
 
 @st.cache_data(ttl=600)  # 10 dakika cache
-def get_available_periods_from_supabase():
-    """Mevcut dönemleri al - DISTINCT sorgu ile optimize edilmiş"""
-    try:
-        # Sadece unique değerleri çek - pagination ile
-        all_periods = set()
-        offset = 0
-        batch_size = 1000
-        
-        while True:
-            result = supabase.table('envanter_veri').select('envanter_donemi').range(offset, offset + batch_size - 1).execute()
-            if not result.data:
-                break
-            
-            for r in result.data:
-                if r.get('envanter_donemi'):
-                    all_periods.add(r['envanter_donemi'])
-            
-            if len(result.data) < batch_size:
-                break
-            offset += batch_size
-            
-            # Güvenlik - max 50K satır tara
-            if offset > 50000:
-                break
-        
-        return sorted(list(all_periods), reverse=True)
-    except Exception as e:
-        st.warning(f"Dönem listesi alınamadı: {str(e)[:50]}")
-        return []
+# ⚠️ SİLİNDİ: get_available_periods_from_supabase
+# Artık VIEW üzerinden alınıyor: get_available_periods_cached()
 
 
-@st.cache_data(ttl=600)  # 10 dakika cache
-def get_available_sms_from_supabase():
-    """Mevcut Satış Müdürlerini al - DISTINCT sorgu ile optimize edilmiş"""
-    try:
-        all_sms = set()
-        offset = 0
-        batch_size = 1000
-        
-        while True:
-            result = supabase.table('envanter_veri').select('satis_muduru').range(offset, offset + batch_size - 1).execute()
-            if not result.data:
-                break
-            
-            for r in result.data:
-                if r.get('satis_muduru'):
-                    all_sms.add(r['satis_muduru'])
-            
-            if len(result.data) < batch_size:
-                break
-            offset += batch_size
-            
-            # Güvenlik - max 50K satır tara
-            if offset > 50000:
-                break
-        
-        return sorted(list(all_sms))
-    except Exception as e:
-        st.warning(f"SM listesi alınamadı: {str(e)[:50]}")
-        return []
+# ⚠️ SİLİNDİ: get_available_sms_from_supabase
+# Artık VIEW üzerinden alınıyor: get_available_sms_cached()
 
 
 @st.cache_data(ttl=600)  # 10 dakika cache
@@ -452,7 +398,11 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None):
             'kismi_miktari': 'Kısmi Miktarı',
             'onceki_fark_miktari': 'Önceki Fark Miktarı',
             'sigara_net': 'Sigara Net',
-            'ic_hirsizlik': 'İç Hırs.',  # Uyumluluk için kısa isim
+            'ic_hirsizlik': 'İç Hırs.',
+            'kronik_acik': 'Kronik',
+            'kronik_fire': 'Kronik Fire',
+            'kasa_adet': 'Kasa Adet',
+            'kasa_tutar': 'Kasa Tutar',
         }
         df = df.rename(columns=column_mapping)
         
@@ -480,20 +430,94 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None):
         # Sigara açığı (negatifse açık var)
         df['Sigara'] = df['Sigara Net'].apply(lambda x: abs(x) if x < 0 else 0)
         
-        # Risk seviyesi
-        def calc_risk(row):
-            toplam_oran = row['Toplam %']
-            if toplam_oran >= 2:
+        # Bölge ortalamalarını hesapla (VIEW'den)
+        bolge_ort = {
+            'kayip_oran': df['Toplam %'].mean() if len(df) > 0 else 1,
+            'ic_hirsizlik': df['İç Hırs.'].mean() if len(df) > 0 else 10,
+            'kronik': df['Kronik'].mean() if len(df) > 0 else 50,
+            'sigara': df['Sigara'].mean() if len(df) > 0 else 0,
+        }
+        
+        # Risk puanı hesapla (tam formül)
+        def calc_risk_score(row):
+            """
+            Risk puanı hesaplama (0-100)
+            Ağırlıklar:
+            - Kayıp Oranı: %30 (bölge ortalamasına göre)
+            - Sigara Açığı: %30
+            - İç Hırsızlık: %30 (bölge ortalamasına göre)
+            - Kronik Açık: %5
+            - 10TL Ürünleri: %5
+            """
+            puan = 0
+            
+            # Kayıp Oranı (30 puan) - Bölge ortalamasına göre
+            kayip_oran = row.get('Toplam %', 0)
+            if bolge_ort['kayip_oran'] > 0:
+                kayip_ratio = kayip_oran / bolge_ort['kayip_oran']
+                kayip_puan = min(30, kayip_ratio * 15)
+            else:
+                kayip_puan = min(30, kayip_oran * 20)
+            puan += kayip_puan
+            
+            # Sigara Açığı (30 puan) - Her sigara kritik
+            sigara_count = row.get('Sigara', 0)
+            if sigara_count > 10:
+                sigara_puan = 30
+            elif sigara_count > 5:
+                sigara_puan = 25
+            elif sigara_count > 0:
+                sigara_puan = sigara_count * 4
+            else:
+                sigara_puan = 0
+            puan += sigara_puan
+            
+            # İç Hırsızlık (30 puan) - Bölge ortalamasına göre
+            ic_hirsizlik_count = row.get('İç Hırs.', 0)
+            if bolge_ort['ic_hirsizlik'] > 0:
+                ic_ratio = ic_hirsizlik_count / bolge_ort['ic_hirsizlik']
+                ic_puan = min(30, ic_ratio * 15)
+            else:
+                ic_puan = min(30, ic_hirsizlik_count * 0.5)
+            puan += ic_puan
+            
+            # Kronik Açık (5 puan)
+            kronik_count = row.get('Kronik', 0)
+            if bolge_ort['kronik'] > 0:
+                kronik_ratio = kronik_count / bolge_ort['kronik']
+                kronik_puan = min(5, kronik_ratio * 2.5)
+            else:
+                kronik_puan = min(5, kronik_count * 0.05)
+            puan += kronik_puan
+            
+            # 10TL Ürünleri (5 puan) - Fazla = şüpheli
+            kasa_adet = abs(row.get('Kasa Adet', 0))
+            if kasa_adet > 20:
+                kasa_puan = 5
+            elif kasa_adet > 10:
+                kasa_puan = 3
+            elif kasa_adet > 0:
+                kasa_puan = 1
+            else:
+                kasa_puan = 0
+            puan += kasa_puan
+            
+            return min(100, max(0, puan))
+        
+        df['Risk Puan'] = df.apply(calc_risk_score, axis=1)
+        
+        # Risk seviyesi (puana göre)
+        def get_risk_level(puan):
+            if puan >= 60:
                 return '🔴 KRİTİK'
-            elif toplam_oran >= 1:
+            elif puan >= 40:
                 return '🟠 RİSKLİ'
-            elif toplam_oran >= 0.5:
+            elif puan >= 20:
                 return '🟡 DİKKAT'
             else:
                 return '🟢 TEMİZ'
         
-        df['Risk'] = df.apply(calc_risk, axis=1)
-        df['Risk Puan'] = df['Toplam %'] * 10
+        df['Risk'] = df['Risk Puan'].apply(get_risk_level)
         
         # BS kolonu
         df['BS'] = df['Bölge Sorumlusu']
@@ -505,84 +529,9 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600)
-def get_store_summary_fast(df):
-    """
-    ⚠️ DEPRECATED - Artık Supabase VIEW kullanılıyor (v_magaza_ozet)
-    Bu fonksiyon SM/GM Özet'te KULLANILMAMALI
-    Sadece Tek Mağaza modunda Excel için gerekirse kullanılabilir
-    """
-    import warnings
-    warnings.warn("get_store_summary_fast DEPRECATED - VIEW kullanın", DeprecationWarning)
-    
-    if df is None or len(df) == 0:
-        return pd.DataFrame()
-    
-    # Mağaza bazlı agregasyon
-    store_summary = df.groupby('Mağaza Kodu').agg({
-        'Mağaza Adı': 'first',
-        'Satış Müdürü': 'first',
-        'Bölge Sorumlusu': 'first',
-        'Envanter Dönemi': 'first',
-        'Envanter Tarihi': 'first',
-        'Envanter Başlangıç Tarihi': 'first',
-        'Fark Tutarı': 'sum',
-        'Kısmi Envanter Tutarı': 'sum',
-        'Fire Tutarı': 'sum',
-        'Satış Tutarı': 'sum',
-        'Fark Miktarı': 'sum',
-        'Kısmi Envanter Miktarı': 'sum',
-        'Önceki Fark Miktarı': 'sum',
-    }).reset_index()
-    
-    # Hesaplamalar
-    store_summary['Fark'] = store_summary['Fark Tutarı'] + store_summary['Kısmi Envanter Tutarı']
-    store_summary['Fire'] = store_summary['Fire Tutarı']
-    store_summary['Toplam Açık'] = store_summary['Fark'] + store_summary['Fire']
-    store_summary['Satış'] = store_summary['Satış Tutarı']
-    
-    # Oranlar
-    store_summary['Fark %'] = (abs(store_summary['Fark']) / store_summary['Satış'] * 100).fillna(0)
-    store_summary['Fire %'] = (abs(store_summary['Fire']) / store_summary['Satış'] * 100).fillna(0)
-    store_summary['Toplam %'] = (abs(store_summary['Toplam Açık']) / store_summary['Satış'] * 100).fillna(0)
-    
-    # Sigara açığı hesapla (mağaza bazlı)
-    sigara_acik = {}
-    for mag in store_summary['Mağaza Kodu'].unique():
-        mag_df = df[df['Mağaza Kodu'] == mag]
-        # Sigara filtresi
-        if 'Mal Grubu Tanımı' in mag_df.columns:
-            col_values = mag_df['Mal Grubu Tanımı'].fillna('').astype(str).str.upper()
-            col_values = col_values.str.replace('İ', 'I', regex=False)
-            col_values = col_values.str.replace('Ü', 'U', regex=False)
-            col_values = col_values.str.replace('Ö', 'O', regex=False)
-            sigara_mask = col_values.str.contains('SIGARA|TUTUN', case=False, na=False, regex=True)
-            sigara_df = mag_df[sigara_mask]
-            if len(sigara_df) > 0:
-                net = (sigara_df['Fark Miktarı'].sum() + 
-                       sigara_df['Kısmi Envanter Miktarı'].sum() + 
-                       sigara_df['Önceki Fark Miktarı'].sum())
-                sigara_acik[mag] = abs(net) if net < 0 else 0
-            else:
-                sigara_acik[mag] = 0
-        else:
-            sigara_acik[mag] = 0
-    
-    store_summary['Sigara'] = store_summary['Mağaza Kodu'].map(sigara_acik).fillna(0)
-    
-    # İç hırsızlık sayısı (Satış Fiyatı >= 100 ve Fark < 0)
-    ic_hirsizlik = {}
-    for mag in store_summary['Mağaza Kodu'].unique():
-        mag_df = df[df['Mağaza Kodu'] == mag]
-        if 'Satış Fiyatı' in mag_df.columns:
-            count = len(mag_df[(mag_df['Satış Fiyatı'] >= 100) & (mag_df['Fark Miktarı'] < 0)])
-            ic_hirsizlik[mag] = count
-        else:
-            ic_hirsizlik[mag] = 0
-    
-    store_summary['İç Hırsızlık'] = store_summary['Mağaza Kodu'].map(ic_hirsizlik).fillna(0)
-    
-    return store_summary
+# ⚠️ SİLİNDİ: get_store_summary_fast
+# Artık VIEW kullanılıyor: get_sm_summary_from_view()
+# Bu fonksiyon performans katiliydi - mağaza mağaza loop yapıyordu
 
 
 # ==================== ANA UYGULAMA ====================
@@ -2191,11 +2140,21 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
     ws['A15'] = "RİSK DAĞILIMI"
     ws['A15'].font = subtitle_font
     
+    # Sigara açığı NET toplamı hesapla (satır sayısı değil!)
+    sigara_net_toplam = 0
+    if len(cigarette_df) > 0:
+        toplam_row = cigarette_df[cigarette_df['Malzeme Kodu'] == '*** TOPLAM ***']
+        if len(toplam_row) > 0:
+            sigara_net_toplam = abs(toplam_row['Ürün Toplam'].values[0])
+        else:
+            # Toplam satırı yoksa manuel hesapla
+            sigara_net_toplam = abs(cigarette_df['Ürün Toplam'].sum())
+    
     risks = [
         ('İç Hırsızlık (≥100TL)', len(internal_df)),
         ('Kronik Açık', len(chronic_df)),
         ('Kronik Fire', len(chronic_fire_df)),
-        ('Sigara Açığı', len(cigarette_df)),
+        ('Sigara Açığı', int(sigara_net_toplam)),  # NET TOPLAM, satır sayısı değil!
         ('Fire Manipülasyonu', len(fire_manip_df)),
     ]
     
