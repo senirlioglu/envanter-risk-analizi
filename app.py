@@ -345,8 +345,60 @@ with col_title:
 with col_user:
     st.markdown(f"👤 **{st.session_state.user.upper()}**")
     if st.button("🚪 Çıkış", key="logout_btn"):
+        # Çıkışta cache'i temizle
+        if "df_all" in st.session_state:
+            del st.session_state.df_all
+        if "df_all_analyzed" in st.session_state:
+            del st.session_state.df_all_analyzed
         st.session_state.user = None
         st.rerun()
+
+# ==================== VERİ YÜKLEME (1 KEZ) ====================
+# Supabase'den veri 1 kez çekilir, sonra pandas ile filtrelenir
+
+def load_all_data_once():
+    """Tüm veriyi 1 kez yükle - session_state'e kaydet"""
+    if "df_all" not in st.session_state or st.session_state.df_all is None:
+        with st.spinner("📊 Veriler yükleniyor (ilk yükleme)..."):
+            df_raw = get_data_from_supabase(satis_muduru=None, donemler=None)
+            if len(df_raw) > 0:
+                st.session_state.df_all = analyze_inventory(df_raw)
+                st.session_state.df_all_loaded_at = datetime.now()
+            else:
+                st.session_state.df_all = pd.DataFrame()
+    return st.session_state.df_all
+
+def filter_data(df, satis_muduru=None, donemler=None, magaza_kodu=None):
+    """DataFrame'i filtrele - Supabase çağırmadan"""
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    
+    filtered = df.copy()
+    
+    if satis_muduru:
+        filtered = filtered[filtered['Satış Müdürü'] == satis_muduru]
+    
+    if donemler and len(donemler) > 0:
+        filtered = filtered[filtered['Envanter Dönemi'].isin(donemler)]
+    
+    if magaza_kodu:
+        filtered = filtered[filtered['Mağaza Kodu'] == magaza_kodu]
+    
+    return filtered
+
+def get_available_periods_cached():
+    """Dönemleri session_state'den al"""
+    if "df_all" in st.session_state and st.session_state.df_all is not None and len(st.session_state.df_all) > 0:
+        periods = st.session_state.df_all['Envanter Dönemi'].dropna().unique().tolist()
+        return sorted(periods, reverse=True)
+    return get_available_periods_from_supabase()
+
+def get_available_sms_cached():
+    """SM'leri session_state'den al"""
+    if "df_all" in st.session_state and st.session_state.df_all is not None and len(st.session_state.df_all) > 0:
+        sms = st.session_state.df_all['Satış Müdürü'].dropna().unique().tolist()
+        return sorted(sms)
+    return get_available_sms_from_supabase()
 
 # Mobil uyumlu CSS
 st.markdown("""
@@ -372,10 +424,21 @@ st.markdown("""
 current_user = st.session_state.user
 is_gm = current_user == "ziya"
 
-if is_gm:
-    analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet", "🌍 GM Özet"], horizontal=True)
-else:
-    analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet"], horizontal=True)
+# Mod ve yenileme butonları
+col_mode, col_refresh = st.columns([6, 1])
+
+with col_mode:
+    if is_gm:
+        analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet", "🌍 GM Özet"], horizontal=True)
+    else:
+        analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet"], horizontal=True)
+
+with col_refresh:
+    if analysis_mode in ["👔 SM Özet", "🌍 GM Özet"]:
+        if st.button("🔄", help="Verileri yenile"):
+            if "df_all" in st.session_state:
+                del st.session_state.df_all
+            st.rerun()
 
 # SM Özet ve GM Özet modları için dosya yükleme gerekmez
 if analysis_mode not in ["👔 SM Özet", "🌍 GM Özet"]:
@@ -1992,9 +2055,12 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
 
 # ===== ANA UYGULAMA =====
 
-# SM Özet modu - Supabase'den okur
+# SM Özet modu - session_state'den filtrele
 if analysis_mode == "👔 SM Özet":
-    st.subheader("👔 SM Özet - Supabase'den")
+    st.subheader("👔 SM Özet")
+    
+    # Veriyi 1 kez yükle
+    df_all = load_all_data_once()
     
     # Kullanıcı -> SM eşleştirmesi
     USER_SM_MAPPING = {
@@ -2013,8 +2079,9 @@ if analysis_mode == "👔 SM Özet":
     # SM ve Dönem seçimi - aynı satırda
     col_sm, col_donem = st.columns([1, 1])
     
-    available_sms = get_available_sms_from_supabase()
-    available_periods = get_available_periods_from_supabase()
+    # Cache'den al (hızlı)
+    available_sms = get_available_sms_cached()
+    available_periods = get_available_periods_cached()
     
     with col_sm:
         if is_gm:
@@ -2059,16 +2126,13 @@ if analysis_mode == "👔 SM Özet":
             selected_periods = []
     
     if selected_sm_option and selected_periods:
-        with st.spinner("Veriler yükleniyor..."):
-            df_supabase = get_data_from_supabase(satis_muduru=selected_sm, donemler=selected_periods)
+        # Pandas ile filtrele (Supabase çağırmadan - HIZLI)
+        df = filter_data(df_all, satis_muduru=selected_sm, donemler=selected_periods)
         
-        if len(df_supabase) == 0:
+        if len(df) == 0:
             st.warning("Seçilen kriterlere uygun veri bulunamadı")
         else:
-            st.success(f"✅ {len(df_supabase):,} satır yüklendi")
-            
-            # Veriyi analyze_inventory'den geçir
-            df = analyze_inventory(df_supabase)
+            st.success(f"✅ {len(df):,} satır filtrelendi")
             
             # Mağaza bilgisi
             if 'Mağaza Kodu' in df.columns:
@@ -2306,8 +2370,11 @@ if analysis_mode == "👔 SM Özet":
 elif analysis_mode == "🌍 GM Özet":
     st.subheader("🌍 GM Özet - Bölge Dashboard")
     
-    # Dönem seçimi
-    available_periods = get_available_periods_from_supabase()
+    # Veriyi 1 kez yükle
+    df_all = load_all_data_once()
+    
+    # Dönem seçimi - cache'den al
+    available_periods = get_available_periods_cached()
     
     if available_periods:
         selected_periods = st.multiselect("📅 Dönem Seçin", available_periods, default=available_periods[:1])
@@ -2316,13 +2383,13 @@ elif analysis_mode == "🌍 GM Özet":
         st.warning("Henüz veri yüklenmemiş. SM'ler Excel yükledikçe veriler burada görünecek.")
     
     if selected_periods:
-        with st.spinner("Tüm bölge verileri yükleniyor..."):
-            df = get_data_from_supabase(satis_muduru=None, donemler=selected_periods)
+        # Pandas ile filtrele (Supabase çağırmadan - HIZLI)
+        df = filter_data(df_all, donemler=selected_periods)
         
         if len(df) == 0:
             st.warning("Seçilen döneme ait veri bulunamadı")
         else:
-            st.success(f"✅ {len(df):,} satır yüklendi")
+            st.success(f"✅ {len(df):,} satır filtrelendi")
             
             magazalar = df['Mağaza Kodu'].dropna().unique().tolist()
             
