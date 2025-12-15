@@ -704,14 +704,21 @@ def detect_cigarette_shortage(df):
     Sigara açığı - Tüm sigaraların TOPLAM (Fark + Kısmi + Önceki) değerine bakılır
     Eğer toplam < 0 ise sigara açığı var demektir
     """
-    sigara_keywords = ['sigara', 'sıgara', 'cigarette', 'tütün', 'makaron']
+    # NOT: "makaron" tek başına aranmıyor çünkü "MAKARON JEL KALEM" gibi ürünler var
+    sigara_keywords = ['sigara', 'sıgara', 'cigarette', 'tütün']
+    sigara_makaron_keywords = ['sigara makaron', 'tütün makaron', 'sarma makaron']
     
     # Sigara ürünlerini filtrele - tüm olası sütunları kontrol et
     def is_sigara(row):
         check_cols = ['Ürün Grubu', 'Ana Grup', 'Mal Grubu', 'Mal Grubu Tanımı', 'Malzeme Adı']
         for col in check_cols:
             val = str(row.get(col, '')).lower()
+            # Normal sigara kelimeleri
             for kw in sigara_keywords:
+                if kw in val:
+                    return True
+            # Makaron sadece sigara/tütün ile birlikteyse
+            for kw in sigara_makaron_keywords:
                 if kw in val:
                     return True
         return False
@@ -1101,7 +1108,9 @@ def analyze_region(df, kasa_kodlari):
         kronik_fire = pd.Series(0, index=magazalar)
     
     # 4. Sigara Açığı - Sigara ürünlerinin toplam farkı (Fark + Kısmi + Önceki)
-    sigara_keywords = ['sigara', 'sıgara', 'makaron', 'tütün', 'cigarette']
+    # NOT: "makaron" tek başına aranmıyor çünkü "MAKARON JEL KALEM" gibi ürünler var
+    sigara_keywords = ['sigara', 'sıgara', 'tütün', 'cigarette']
+    sigara_makaron_keywords = ['sigara makaron', 'tütün makaron', 'sarma makaron']
     
     # Hem Mal Grubu Tanımı hem Malzeme Adı'nda ara
     sigara_mask = pd.Series(False, index=df.index)
@@ -1109,7 +1118,11 @@ def analyze_region(df, kasa_kodlari):
     for col in ['Mal Grubu Tanımı', 'Malzeme Adı']:
         if col in df.columns:
             col_lower = df[col].fillna('').astype(str).str.lower()
+            # Normal sigara kelimeleri
             for kw in sigara_keywords:
+                sigara_mask = sigara_mask | col_lower.str.contains(kw, na=False, regex=False)
+            # Makaron sadece sigara/tütün ile birlikteyse
+            for kw in sigara_makaron_keywords:
                 sigara_mask = sigara_mask | col_lower.str.contains(kw, na=False, regex=False)
     
     # Sigara ürünlerinin fark toplamı (Fark + Kısmi + Önceki)
