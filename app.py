@@ -1606,26 +1606,42 @@ def aggregate_by_group(store_df, group_col):
     if group_col not in store_df.columns:
         return pd.DataFrame()
     
+    # Kolon isimlerini kontrol et (VIEW vs analyze_region uyumu)
+    kronik_col = 'Kronik' if 'Kronik' in store_df.columns else 'Kr.Açık'
+    kasa_adet_col = 'Kasa Adet' if 'Kasa Adet' in store_df.columns else '10TL Adet'
+    kasa_tutar_col = 'Kasa Tutar' if 'Kasa Tutar' in store_df.columns else '10TL Tutar'
+    
+    # Eksik kolonları 0 ile doldur
+    if kronik_col not in store_df.columns:
+        store_df[kronik_col] = 0
+    if kasa_adet_col not in store_df.columns:
+        store_df[kasa_adet_col] = 0
+    if kasa_tutar_col not in store_df.columns:
+        store_df[kasa_tutar_col] = 0
+    if 'Gün' not in store_df.columns:
+        store_df['Gün'] = 1
+    
     # Temel metrikler
-    grouped = store_df.groupby(group_col).agg({
+    agg_dict = {
         'Mağaza Kodu': 'count',
         'Satış': 'sum',
         'Fark': 'sum',
         'Fire': 'sum',
         'Toplam Açık': 'sum',
         'İç Hırs.': 'sum',
-        'Kr.Açık': 'sum',
+        kronik_col: 'sum',
         'Sigara': 'sum',
-        '10TL Adet': 'sum',
-        '10TL Tutar': 'sum',
+        kasa_adet_col: 'sum',
+        kasa_tutar_col: 'sum',
         'Gün': 'sum',
-    }).reset_index()
+    }
+    
+    grouped = store_df.groupby(group_col).agg(agg_dict).reset_index()
     
     grouped.columns = [group_col, 'Mağaza Sayısı', 'Satış', 'Fark', 'Fire', 'Toplam Açık',
                        'İç Hırs.', 'Kronik', 'Sigara', '10TL Adet', '10TL Tutar', 'Toplam Gün']
     
     # Satış Ağırlıklı Ortalama Risk Puanı hesapla
-    # Formül: Σ(Mağaza Risk × Mağaza Satış) / Σ(Mağaza Satış)
     for idx, row in grouped.iterrows():
         grup_magazalar = store_df[store_df[group_col] == row[group_col]]
         
