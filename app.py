@@ -230,28 +230,96 @@ def save_to_supabase(df_original):
         return 0, 0, f"Hata: {str(e)}"
 
 
+@st.cache_data(ttl=600)  # 10 dakika cache
 def get_available_periods_from_supabase():
-    """Mevcut dönemleri al"""
+    """Mevcut dönemleri al - DISTINCT sorgu ile optimize edilmiş"""
     try:
-        result = supabase.table('envanter_veri').select('envanter_donemi').execute()
-        if result.data:
-            periods = list(set([r['envanter_donemi'] for r in result.data if r['envanter_donemi']]))
-            return sorted(periods, reverse=True)
-    except:
-        pass
-    return []
+        # Sadece unique değerleri çek - pagination ile
+        all_periods = set()
+        offset = 0
+        batch_size = 1000
+        
+        while True:
+            result = supabase.table('envanter_veri').select('envanter_donemi').range(offset, offset + batch_size - 1).execute()
+            if not result.data:
+                break
+            
+            for r in result.data:
+                if r.get('envanter_donemi'):
+                    all_periods.add(r['envanter_donemi'])
+            
+            if len(result.data) < batch_size:
+                break
+            offset += batch_size
+            
+            # Güvenlik - max 50K satır tara
+            if offset > 50000:
+                break
+        
+        return sorted(list(all_periods), reverse=True)
+    except Exception as e:
+        st.warning(f"Dönem listesi alınamadı: {str(e)[:50]}")
+        return []
 
 
+@st.cache_data(ttl=600)  # 10 dakika cache
 def get_available_sms_from_supabase():
-    """Mevcut Satış Müdürlerini al"""
+    """Mevcut Satış Müdürlerini al - DISTINCT sorgu ile optimize edilmiş"""
     try:
-        result = supabase.table('envanter_veri').select('satis_muduru').execute()
-        if result.data:
-            sms = list(set([r['satis_muduru'] for r in result.data if r['satis_muduru']]))
-            return sorted(sms)
+        all_sms = set()
+        offset = 0
+        batch_size = 1000
+        
+        while True:
+            result = supabase.table('envanter_veri').select('satis_muduru').range(offset, offset + batch_size - 1).execute()
+            if not result.data:
+                break
+            
+            for r in result.data:
+                if r.get('satis_muduru'):
+                    all_sms.add(r['satis_muduru'])
+            
+            if len(result.data) < batch_size:
+                break
+            offset += batch_size
+            
+            # Güvenlik - max 50K satır tara
+            if offset > 50000:
+                break
+        
+        return sorted(list(all_sms))
+    except Exception as e:
+        st.warning(f"SM listesi alınamadı: {str(e)[:50]}")
+        return []
+
+
+@st.cache_data(ttl=600)  # 10 dakika cache
+def get_available_stores_from_supabase():
+    """Mevcut mağazaları al - dropdown için"""
+    try:
+        all_stores = {}
+        offset = 0
+        batch_size = 1000
+        
+        while True:
+            result = supabase.table('envanter_veri').select('magaza_kodu,magaza_tanim').range(offset, offset + batch_size - 1).execute()
+            if not result.data:
+                break
+            
+            for r in result.data:
+                if r.get('magaza_kodu'):
+                    all_stores[r['magaza_kodu']] = r.get('magaza_tanim', '')
+            
+            if len(result.data) < batch_size:
+                break
+            offset += batch_size
+            
+            if offset > 50000:
+                break
+        
+        return all_stores
     except:
-        pass
-    return []
+        return {}
 
 
 @st.cache_data(ttl=300)  # 5 dakika cache
@@ -366,29 +434,47 @@ with col_user:
 # Supabase'den veri 1 kez çekilir, sonra pandas ile filtrelenir
 
 def load_all_data_once():
-    """Tüm veriyi 1 kez yükle - session_state'e kaydet"""
+    """Tüm veriyi 1 kez yükle - session_state'e kaydet - Optimized"""
     if "df_all" not in st.session_state or st.session_state.df_all is None:
-        with st.spinner("📊 Veriler yükleniyor (ilk yükleme)..."):
-            df_raw = get_data_from_supabase(satis_muduru=None, donemler=None)
-            if len(df_raw) > 0:
-                df_analyzed = analyze_inventory(df_raw)
-                
-                # Duplicate'ları kaldır (aynı mağaza + dönem + depolama + malzeme)
-                # Son yüklenen kayıt kalır
-                duplicate_cols = ['Mağaza Kodu', 'Envanter Dönemi', 'Depolama Koşulu Grubu', 'Malzeme Kodu']
-                existing_cols = [c for c in duplicate_cols if c in df_analyzed.columns]
-                
-                if existing_cols:
-                    before_count = len(df_analyzed)
-                    df_analyzed = df_analyzed.drop_duplicates(subset=existing_cols, keep='last')
-                    after_count = len(df_analyzed)
-                    if before_count > after_count:
-                        st.info(f"🧹 {before_count - after_count:,} duplicate kayıt kaldırıldı")
-                
-                st.session_state.df_all = df_analyzed
-                st.session_state.df_all_loaded_at = datetime.now()
-            else:
-                st.session_state.df_all = pd.DataFrame()
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
+        
+        progress_text.text("📊 Veriler yükleniyor...")
+        progress_bar.progress(10)
+        
+        df_raw = get_data_from_supabase(satis_muduru=None, donemler=None)
+        progress_bar.progress(70)
+        
+        if len(df_raw) > 0:
+            progress_text.text("🔄 Analiz yapılıyor...")
+            df_analyzed = analyze_inventory(df_raw)
+            progress_bar.progress(90)
+            
+            # Duplicate'ları kaldır (aynı mağaza + dönem + depolama + malzeme)
+            duplicate_cols = ['Mağaza Kodu', 'Envanter Dönemi', 'Depolama Koşulu Grubu', 'Malzeme Kodu']
+            existing_cols = [c for c in duplicate_cols if c in df_analyzed.columns]
+            
+            if existing_cols:
+                before_count = len(df_analyzed)
+                df_analyzed = df_analyzed.drop_duplicates(subset=existing_cols, keep='last')
+                after_count = len(df_analyzed)
+                if before_count > after_count:
+                    st.info(f"🧹 {before_count - after_count:,} duplicate kayıt kaldırıldı")
+            
+            st.session_state.df_all = df_analyzed
+            st.session_state.df_all_loaded_at = datetime.now()
+            progress_bar.progress(100)
+            progress_text.text(f"✅ {len(df_analyzed):,} kayıt yüklendi")
+        else:
+            st.session_state.df_all = pd.DataFrame()
+            progress_text.text("⚠️ Veri bulunamadı")
+        
+        # Progress bar'ı temizle
+        import time
+        time.sleep(0.5)
+        progress_bar.empty()
+        progress_text.empty()
+        
     return st.session_state.df_all
 
 def filter_data(df, satis_muduru=None, donemler=None, magaza_kodu=None):
@@ -790,7 +876,7 @@ def detect_cigarette_shortage(df):
     Sigara açığı - Tüm sigaraların TOPLAM (Fark + Kısmi + Önceki) değerine bakılır
     Eğer toplam < 0 ise sigara açığı var demektir
     
-    Sigara tespiti: Mal Grubu Tanımı = 'SİGARA' veya 'TÜTÜN'
+    Sigara tespiti: Ürün Grubu veya Mal Grubu Tanımı = 'SİGARA' veya 'TÜTÜN'
     """
     # Türkçe karakter normalize fonksiyonu
     def normalize_turkish(text):
@@ -803,17 +889,19 @@ def detect_cigarette_shortage(df):
             text = text.replace(tr_char, en_char)
         return text.strip()
     
-    # Sigara ürünlerini filtrele - Mal Grubu Tanımı veya Ürün Grubu (analyze sonrası isim)
-    def is_sigara(row):
-        # Mal Grubu Tanımı kontrolü (orijinal sütun)
-        for col in ['Mal Grubu Tanımı', 'Ürün Grubu']:
-            if col in df.columns:
-                val = normalize_turkish(row.get(col, ''))
-                if val in ['SIGARA', 'TUTUN']:
-                    return True
-        return False
+    # Önce hangi sütun mevcut kontrol et (öncelik sırasına göre)
+    sigara_col = None
+    for col in ['Ürün Grubu', 'Mal Grubu Tanımı', 'mal_grubu_tanimi']:
+        if col in df.columns:
+            sigara_col = col
+            break
     
-    sigara_mask = df.apply(is_sigara, axis=1)
+    if sigara_col is None:
+        return pd.DataFrame()
+    
+    # Sigara ürünlerini filtrele - vectorized
+    normalized_values = df[sigara_col].apply(normalize_turkish)
+    sigara_mask = normalized_values.isin(['SIGARA', 'TUTUN'])
     
     sigara_df = df[sigara_mask].copy()
     
