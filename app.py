@@ -92,7 +92,15 @@ login()
 # ==================== SUPABASE FONKSİYONLARI ====================
 
 def save_to_supabase(df_original):
-    """Excel verisini Supabase'e kaydet (duplicate kontrolü ile)"""
+    """
+    Excel verisini Supabase'e kaydet
+    
+    Duplicate kontrolü: Mağaza Kodu + Envanter Dönemi + Depolama Koşulu Grubu
+    - Aynı kombinasyon zaten varsa → O envanter ATLANIR
+    - Yoksa → Yüklenir
+    
+    NOT: Aynı ürün farklı depolama gruplarında OLAMAZ (Soğuk'ta olan Gıda Dışı'nda yok)
+    """
     try:
         df = df_original.copy()
         
@@ -102,45 +110,44 @@ def save_to_supabase(df_original):
             if col not in df.columns:
                 return 0, 0, f"'{col}' sütunu bulunamadı"
         
-        # Unique key oluştur - Bu yükleme için hangi envanterler var
-        df['_inv_key'] = df['Mağaza Kodu'].astype(str) + '_' + \
-                         df['Depolama Koşulu Grubu'].astype(str) + '_' + \
-                         df['Envanter Dönemi'].astype(str)
+        # Unique envanter kombinasyonları bul (Mağaza + Dönem + Depolama Grubu)
+        df['_env_key'] = (df['Mağaza Kodu'].astype(str) + '|' + 
+                         df['Envanter Dönemi'].astype(str) + '|' + 
+                         df['Depolama Koşulu Grubu'].astype(str))
         
-        unique_inventories = df['_inv_key'].unique().tolist()
+        unique_envs = df[['Mağaza Kodu', 'Envanter Dönemi', 'Depolama Koşulu Grubu', '_env_key']].drop_duplicates()
         
-        # Supabase'de bu envanterler var mı kontrol et
-        existing_inventories = set()
-        for inv_key in unique_inventories:
-            parts = inv_key.split('_')
-            if len(parts) >= 3:
-                mag_kodu = parts[0]
-                dep_grubu = '_'.join(parts[1:-1])  # Orta kısım (boşluk içerebilir)
-                donem = parts[-1]
+        # Supabase'de hangileri mevcut kontrol et
+        existing_envs = set()
+        for _, env_row in unique_envs.iterrows():
+            try:
+                result = supabase.table('envanter_veri').select('id').eq(
+                    'magaza_kodu', str(env_row['Mağaza Kodu'])
+                ).eq(
+                    'envanter_donemi', str(env_row['Envanter Dönemi'])
+                ).eq(
+                    'depolama_kosulu_grubu', str(env_row['Depolama Koşulu Grubu'])
+                ).limit(1).execute()
                 
-                try:
-                    result = supabase.table('envanter_veri').select('id').eq(
-                        'magaza_kodu', mag_kodu
-                    ).eq(
-                        'depolama_kosulu_grubu', dep_grubu
-                    ).eq(
-                        'envanter_donemi', donem
-                    ).limit(1).execute()
-                    
-                    if result.data and len(result.data) > 0:
-                        existing_inventories.add(inv_key)
-                except:
-                    pass
+                if result.data and len(result.data) > 0:
+                    existing_envs.add(env_row['_env_key'])
+            except:
+                pass
         
         # Sadece yeni envanterler
-        new_inventories = [inv for inv in unique_inventories if inv not in existing_inventories]
-        skipped_inventories = [inv for inv in unique_inventories if inv in existing_inventories]
+        new_env_keys = set(unique_envs['_env_key']) - existing_envs
+        skipped_env_keys = existing_envs
         
-        if not new_inventories:
-            return 0, len(skipped_inventories), "Tüm envanterler zaten mevcut"
+        if not new_env_keys:
+            skipped_list = [k.replace('|', ' / ') for k in skipped_env_keys]
+            return 0, len(skipped_env_keys), f"Tüm envanterler zaten mevcut: {', '.join(skipped_list[:3])}..."
         
         # Sadece yeni envanterlerin verilerini filtrele
-        df_new = df[df['_inv_key'].isin(new_inventories)].copy()
+        df_new = df[df['_env_key'].isin(new_env_keys)].copy()
+        
+        # DataFrame içinde duplicate satırları kaldır (aynı malzeme kodu)
+        duplicate_key_cols = ['Mağaza Kodu', 'Envanter Dönemi', 'Depolama Koşulu Grubu', 'Malzeme Kodu']
+        df_new = df_new.drop_duplicates(subset=duplicate_key_cols, keep='last')
         
         # Sütun mapping
         col_mapping = {
@@ -216,7 +223,8 @@ def save_to_supabase(df_original):
             except Exception as e:
                 st.warning(f"Batch {i//batch_size + 1} hatası: {str(e)[:100]}")
         
-        return inserted, len(skipped_inventories), new_inventories
+        new_list = [k.replace('|', ' / ') for k in new_env_keys]
+        return inserted, len(skipped_env_keys), f"Yüklenen: {', '.join(new_list[:3])}..."
         
     except Exception as e:
         return 0, 0, f"Hata: {str(e)}"
@@ -258,7 +266,7 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
         # Sadece gerekli sütunları çek
         required_columns = ','.join([
             'magaza_kodu', 'magaza_tanim', 'satis_muduru', 'bolge_sorumlusu',
-            'depolama_kosulu_grubu', 'envanter_donemi', 'envanter_tarihi', 'envanter_baslangic_tarihi',
+            'depolama_kosulu_grubu', 'depolama_kosulu', 'envanter_donemi', 'envanter_tarihi', 'envanter_baslangic_tarihi',
             'mal_grubu_tanimi', 'malzeme_kodu', 'malzeme_tanimi', 'satis_fiyati',
             'fark_miktari', 'fark_tutari', 'kismi_envanter_miktari', 'kismi_envanter_tutari',
             'fire_miktari', 'fire_tutari', 'onceki_fark_miktari', 'onceki_fire_miktari',
@@ -307,6 +315,7 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             'satis_muduru': 'Satış Müdürü',
             'bolge_sorumlusu': 'Bölge Sorumlusu',
             'depolama_kosulu_grubu': 'Depolama Koşulu Grubu',
+            'depolama_kosulu': 'Depolama Koşulu',
             'envanter_donemi': 'Envanter Dönemi',
             'envanter_tarihi': 'Envanter Tarihi',
             'envanter_baslangic_tarihi': 'Envanter Başlangıç Tarihi',
@@ -780,6 +789,8 @@ def detect_cigarette_shortage(df):
     """
     Sigara açığı - Tüm sigaraların TOPLAM (Fark + Kısmi + Önceki) değerine bakılır
     Eğer toplam < 0 ise sigara açığı var demektir
+    
+    Sigara tespiti: Mal Grubu Tanımı = 'SİGARA' veya 'TÜTÜN'
     """
     # Türkçe karakter normalize fonksiyonu
     def normalize_turkish(text):
@@ -792,20 +803,13 @@ def detect_cigarette_shortage(df):
             text = text.replace(tr_char, en_char)
         return text.strip()
     
-    # Sigara ürünlerini filtrele
+    # Sigara ürünlerini filtrele - Mal Grubu Tanımı veya Ürün Grubu (analyze sonrası isim)
     def is_sigara(row):
-        # Öncelikle Mal Grubu Tanımı'na bak (en güvenilir)
-        mal_grubu = normalize_turkish(row.get('Mal Grubu Tanımı', ''))
-        if mal_grubu == 'SIGARA':
-            return True
-        
-        # Yedek kontrol - diğer sütunlarda sigara kelimesi ara
-        sigara_keywords = ['SIGARA', 'CIGARETTE', 'TUTUN']
-        check_cols = ['Mal Grubu Tanımı', 'Malzeme Adı']
-        for col in check_cols:
-            val = normalize_turkish(row.get(col, ''))
-            for kw in sigara_keywords:
-                if kw in val:
+        # Mal Grubu Tanımı kontrolü (orijinal sütun)
+        for col in ['Mal Grubu Tanımı', 'Ürün Grubu']:
+            if col in df.columns:
+                val = normalize_turkish(row.get(col, ''))
+                if val in ['SIGARA', 'TUTUN']:
                     return True
         return False
     
