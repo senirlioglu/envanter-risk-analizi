@@ -1826,7 +1826,9 @@ def create_gm_excel_report(store_df, sm_df, bs_df, params):
         ws4.cell(row=row_idx, column=8, value=f"%{row['Toplam %']:.1f}").border = border
         ws4.cell(row=row_idx, column=9, value=row['Sigara']).border = border
         ws4.cell(row=row_idx, column=10, value=row['İç Hırs.']).border = border
-        ws4.cell(row=row_idx, column=11, value=row['10TL Adet']).border = border
+        # 10TL Adet - VIEW ve analyze_region uyumu
+        kasa_adet = row.get('Kasa Adet', row.get('10TL Adet', 0))
+        ws4.cell(row=row_idx, column=11, value=kasa_adet).border = border
         ws4.cell(row=row_idx, column=12, value=f"{row['Risk Puan']:.0f}").border = border
         
         risk_cell = ws4.cell(row=row_idx, column=13, value=row['Risk'])
