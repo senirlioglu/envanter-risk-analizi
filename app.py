@@ -2616,9 +2616,19 @@ if analysis_mode == "👔 SM Özet":
                     kritik_df = region_df[region_df['Risk'].str.contains('KRİTİK')]
                     if len(kritik_df) > 0:
                         for _, row in kritik_df.iterrows():
+                            # Risk nedenlerini hesapla (VIEW'de yok)
+                            nedenler = []
+                            if row.get('Sigara', 0) > 0:
+                                nedenler.append(f"🚬 Sigara: {row['Sigara']:.0f}")
+                            if row.get('İç Hırs.', 0) > 5:
+                                nedenler.append(f"🔒 İç Hırs: {row['İç Hırs.']:.0f}")
+                            if row.get('Toplam %', 0) >= 2:
+                                nedenler.append(f"📊 Yüksek Kayıp")
+                            neden_str = " | ".join(nedenler) if nedenler else "Yüksek kayıp oranı"
+                            
                             st.error(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
                                     f"Kayıp: %{row['Toplam %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
-                                    f"**Neden:** {row['Risk Nedenleri']}")
+                                    f"**Neden:** {neden_str}")
                     else:
                         st.success("Kritik mağaza yok! 🎉")
                 
@@ -2627,9 +2637,17 @@ if analysis_mode == "👔 SM Özet":
                     riskli_df = region_df[region_df['Risk'].str.contains('RİSKLİ')]
                     if len(riskli_df) > 0:
                         for _, row in riskli_df.iterrows():
+                            # Risk nedenlerini hesapla
+                            nedenler = []
+                            if row.get('Sigara', 0) > 0:
+                                nedenler.append(f"🚬 Sigara: {row['Sigara']:.0f}")
+                            if row.get('İç Hırs.', 0) > 5:
+                                nedenler.append(f"🔒 İç Hırs: {row['İç Hırs.']:.0f}")
+                            neden_str = " | ".join(nedenler) if nedenler else "Kayıp oranı yüksek"
+                            
                             st.warning(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
                                       f"Kayıp: %{row['Toplam %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
-                                      f"**Neden:** {row['Risk Nedenleri']}")
+                                      f"**Neden:** {neden_str}")
                     else:
                         st.success("Riskli mağaza yok! 🎉")
                 
@@ -3096,9 +3114,19 @@ elif uploaded_file is not None:
                     kritik_df = region_df[region_df['Risk'].str.contains('KRİTİK')]
                     if len(kritik_df) > 0:
                         for _, row in kritik_df.iterrows():
+                            # Risk nedenlerini hesapla
+                            nedenler = []
+                            if row.get('Sigara', 0) > 0:
+                                nedenler.append(f"🚬 Sigara: {row['Sigara']:.0f}")
+                            if row.get('İç Hırs.', 0) > 5:
+                                nedenler.append(f"🔒 İç Hırs: {row['İç Hırs.']:.0f}")
+                            if row.get('Toplam %', 0) >= 2:
+                                nedenler.append(f"📊 Yüksek Kayıp")
+                            neden_str = " | ".join(nedenler) if nedenler else "Yüksek kayıp oranı"
+                            
                             st.error(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
                                     f"Kayıp: %{row['Toplam %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
-                                    f"**Neden:** {row['Risk Nedenleri']}")
+                                    f"**Neden:** {neden_str}")
                     else:
                         st.success("Kritik mağaza yok! 🎉")
                 
@@ -3107,9 +3135,17 @@ elif uploaded_file is not None:
                     riskli_df = region_df[region_df['Risk'].str.contains('RİSKLİ')]
                     if len(riskli_df) > 0:
                         for _, row in riskli_df.iterrows():
+                            # Risk nedenlerini hesapla
+                            nedenler = []
+                            if row.get('Sigara', 0) > 0:
+                                nedenler.append(f"🚬 Sigara: {row['Sigara']:.0f}")
+                            if row.get('İç Hırs.', 0) > 5:
+                                nedenler.append(f"🔒 İç Hırs: {row['İç Hırs.']:.0f}")
+                            neden_str = " | ".join(nedenler) if nedenler else "Kayıp oranı yüksek"
+                            
                             st.warning(f"**{row['Mağaza Kodu']} - {row['Mağaza Adı']}**\n\n"
                                       f"Kayıp: %{row['Toplam %']:.1f} | Fark: {row['Fark']:,.0f} TL\n\n"
-                                      f"**Neden:** {row['Risk Nedenleri']}")
+                                      f"**Neden:** {neden_str}")
                     else:
                         st.success("Riskli mağaza yok! 🎉")
                 
