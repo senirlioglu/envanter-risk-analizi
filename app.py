@@ -452,7 +452,7 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None):
             'kismi_miktari': 'Kısmi Miktarı',
             'onceki_fark_miktari': 'Önceki Fark Miktarı',
             'sigara_net': 'Sigara Net',
-            'ic_hirsizlik': 'İç Hırsızlık',
+            'ic_hirsizlik': 'İç Hırs.',  # Uyumluluk için kısa isim
         }
         df = df.rename(columns=column_mapping)
         
@@ -2505,19 +2505,25 @@ if analysis_mode == "👔 SM Özet":
                 
                 # BS Özeti
                 st.markdown("### 👔 BS Özeti")
+                
                 bs_ozet = region_df.groupby('BS').agg({
                     'Mağaza Kodu': 'count',
                     'Satış': 'sum',
                     'Fark': 'sum',
                     'Fire': 'sum',
                     'Toplam Açık': 'sum',
-                    'Risk Puan': 'sum',  # Toplam risk puanı
+                    'Risk Puan': 'sum',
                     'Sigara': 'sum',
                     'İç Hırs.': 'sum'
                 }).reset_index()
-                bs_ozet.columns = ['BS', 'Mağaza', 'Satış', 'Fark', 'Fire', 'Toplam', 'Risk Puan', 'Sigara', 'İç Hırs.']
+                
+                bs_ozet = bs_ozet.rename(columns={
+                    'Mağaza Kodu': 'Mağaza',
+                    'Toplam Açık': 'Toplam'
+                })
+                
                 bs_ozet['Kayıp %'] = abs(bs_ozet['Toplam']) / bs_ozet['Satış'] * 100
-                bs_ozet = bs_ozet.sort_values('Risk Puan', ascending=False)  # Risk puanına göre sırala
+                bs_ozet = bs_ozet.sort_values('Risk Puan', ascending=False)
                 
                 # BS tablosu - tam rakamlar ve risk puanı ile
                 for _, bs_row in bs_ozet.iterrows():
