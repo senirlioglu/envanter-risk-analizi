@@ -2406,6 +2406,9 @@ if analysis_mode == "👔 SM Özet":
             
             st.subheader(f"📊 {display_sm} - {len(magazalar)} Mağaza")
             
+            # ⚡ Risk puanına göre sırala (yüksekten düşüğe)
+            region_df = region_df.sort_values('Risk Puan', ascending=False)
+            
             if len(region_df) == 0:
                 st.warning("Analiz edilecek mağaza bulunamadı!")
             else:
@@ -2473,7 +2476,8 @@ if analysis_mode == "👔 SM Özet":
                     'Toplam Açık': 'sum',
                     'Risk Puan': 'sum',
                     'Sigara': 'sum',
-                    'İç Hırs.': 'sum'
+                    'İç Hırs.': 'sum',
+                    'Kasa Tutar': 'sum'  # 10TL ürünleri
                 }).reset_index()
                 
                 bs_ozet = bs_ozet.rename(columns={
@@ -2486,12 +2490,12 @@ if analysis_mode == "👔 SM Özet":
                 
                 # BS tablosu - tam rakamlar ve risk puanı ile
                 for _, bs_row in bs_ozet.iterrows():
-                    col1, col2, col3, col4, col5, col6 = st.columns([2.5, 1.5, 1.5, 1, 1, 1])
+                    col1, col2, col3, col4, col5, col6 = st.columns([2.5, 1.5, 1.5, 1, 1.2, 1])
                     col1.write(f"**{bs_row['BS']}** ({bs_row['Mağaza']:.0f} mağ.)")
                     col2.write(f"Satış: {bs_row['Satış']/1e6:.1f}M | Fark: {bs_row['Fark']:,.0f}")
                     col3.write(f"Fire: {bs_row['Fire']:,.0f}")
                     col4.write(f"Kayıp: %{bs_row['Kayıp %']:.1f}")
-                    col5.write(f"🚬{bs_row['Sigara']:.0f} 🔒{bs_row['İç Hırs.']:.0f}")
+                    col5.write(f"🚬{bs_row['Sigara']:.0f} 🔒{bs_row['İç Hırs.']:.0f} 💰{bs_row['Kasa Tutar']:,.0f}")
                     col6.write(f"**Risk: {bs_row['Risk Puan']:.0f}**")
                 
                 # Sekmeler - Bölge Özeti ile aynı
@@ -2501,17 +2505,26 @@ if analysis_mode == "👔 SM Özet":
                 with tabs[0]:
                     st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
                     
-                    # Basit tablo göster - analiz yapmadan
+                    # Basit tablo göster - 10TL açığı dahil
                     display_cols = ['Mağaza Kodu', 'Mağaza Adı', 'BS', 'Satış', 'Fark', 'Fire', 
-                                   'Toplam %', 'Sigara', 'İç Hırs.', 'Risk Puan', 'Risk']
+                                   'Toplam %', 'Sigara', 'İç Hırs.', 'Kasa Tutar', 'Risk Puan', 'Risk']
                     
                     # Formatla
                     display_df = region_df[display_cols].copy()
+                    display_df['Mağaza Kodu'] = display_df['Mağaza Kodu'].astype(str)  # Dar kolon için
                     display_df['Satış'] = display_df['Satış'].apply(lambda x: f"{x/1000:.0f}K")
                     display_df['Fark'] = display_df['Fark'].apply(lambda x: f"{x/1000:.0f}K")
                     display_df['Fire'] = display_df['Fire'].apply(lambda x: f"{x/1000:.0f}K")
                     display_df['Toplam %'] = display_df['Toplam %'].apply(lambda x: f"%{x:.1f}")
+                    display_df['Kasa Tutar'] = display_df['Kasa Tutar'].apply(lambda x: f"{x:,.0f}")
                     display_df['Risk Puan'] = display_df['Risk Puan'].apply(lambda x: f"{x:.0f}")
+                    
+                    # Kolon isimlerini kısalt
+                    display_df = display_df.rename(columns={
+                        'Mağaza Kodu': 'Kod',
+                        'Mağaza Adı': 'Mağaza',
+                        'Kasa Tutar': '10TL'
+                    })
                     
                     st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
                     
@@ -2688,6 +2701,9 @@ elif analysis_mode == "🌍 GM Özet":
             # SM ve BS agregasyonları
             sm_df = aggregate_by_group(region_df, 'SM') if 'SM' in region_df.columns else pd.DataFrame()
             bs_df = aggregate_by_group(region_df, 'BS') if 'BS' in region_df.columns else pd.DataFrame()
+            
+            # ⚡ Risk puanına göre sırala (yüksekten düşüğe)
+            region_df = region_df.sort_values('Risk Puan', ascending=False)
             
             if len(region_df) == 0:
                 st.error("Analiz edilecek mağaza bulunamadı!")
@@ -2937,6 +2953,10 @@ elif uploaded_file is not None:
             with st.spinner("Tüm mağazalar analiz ediliyor..."):
                 region_df = analyze_region(df, kasa_kodlari)
             
+            # ⚡ Risk puanına göre sırala (yüksekten düşüğe)
+            if len(region_df) > 0:
+                region_df = region_df.sort_values('Risk Puan', ascending=False)
+            
             if len(region_df) == 0:
                 st.warning("Analiz edilecek mağaza bulunamadı!")
             else:
@@ -2998,27 +3018,28 @@ elif uploaded_file is not None:
                 with tabs[0]:
                     st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
                     
-                    # Başlık satırı
-                    cols = st.columns([0.4, 0.8, 1.3, 1.2, 0.9, 0.7, 0.9, 0.7, 0.6, 0.6, 0.4, 0.5, 0.8])
+                    # Başlık satırı - 10TL eklendi
+                    cols = st.columns([0.4, 0.6, 1.3, 1.1, 0.8, 0.6, 0.8, 0.6, 0.5, 0.5, 0.4, 0.6, 0.5, 0.7])
                     cols[0].markdown("**📥**")
                     cols[1].markdown("**Kod**")
-                    cols[2].markdown("**Mağaza Adı**")
+                    cols[2].markdown("**Mağaza**")
                     cols[3].markdown("**BS**")
                     cols[4].markdown("**Fark**")
-                    cols[5].markdown("**Günlük**")
+                    cols[5].markdown("**G.Fark**")
                     cols[6].markdown("**Fire**")
-                    cols[7].markdown("**Günlük**")
+                    cols[7].markdown("**G.Fire**")
                     cols[8].markdown("**Kayıp%**")
                     cols[9].markdown("**Fire%**")
                     cols[10].markdown("**🚬**")
-                    cols[11].markdown("**Risk**")
-                    cols[12].markdown("**Seviye**")
+                    cols[11].markdown("**💰10TL**")
+                    cols[12].markdown("**Risk**")
+                    cols[13].markdown("**Seviye**")
                     
                     st.markdown("---")
                     
                     # Veri satırları
                     for idx, (_, row) in enumerate(region_df.iterrows()):
-                        cols = st.columns([0.4, 0.8, 1.3, 1.2, 0.9, 0.7, 0.9, 0.7, 0.6, 0.6, 0.4, 0.5, 0.8])
+                        cols = st.columns([0.4, 0.6, 1.3, 1.1, 0.8, 0.6, 0.8, 0.6, 0.5, 0.5, 0.4, 0.6, 0.5, 0.7])
                         
                         # Mağaza verisini al ve tam rapor oluştur
                         mag_kod = row['Mağaza Kodu']
@@ -3056,17 +3077,18 @@ elif uploaded_file is not None:
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 key=f"dl_{idx}")
                         cols[1].write(f"{row['Mağaza Kodu']}")
-                        cols[2].write(f"{row['Mağaza Adı'][:18] if row['Mağaza Adı'] else '-'}")
-                        cols[3].write(f"{row['BS'][:12] if row['BS'] else '-'}")
-                        cols[4].write(f"{row['Fark']:,.0f}")
+                        cols[2].write(f"{row['Mağaza Adı'][:15] if row['Mağaza Adı'] else '-'}")
+                        cols[3].write(f"{row['BS'][:10] if row['BS'] else '-'}")
+                        cols[4].write(f"{row['Fark']/1000:.0f}K")
                         cols[5].write(f"{row['Günlük Fark']:,.0f}")
-                        cols[6].write(f"{row['Fire']:,.0f}")
+                        cols[6].write(f"{row['Fire']/1000:.0f}K")
                         cols[7].write(f"{row['Günlük Fire']:,.0f}")
                         cols[8].write(f"%{row['Toplam %']:.1f}")
                         cols[9].write(f"%{row['Fire %']:.1f}")
-                        cols[10].write(f"{row['Sigara']}" if row['Sigara'] > 0 else "-")
-                        cols[11].write(f"{row['Risk Puan']:.0f}")
-                        cols[12].write(row['Risk'])
+                        cols[10].write(f"{row['Sigara']:.0f}" if row['Sigara'] > 0 else "-")
+                        cols[11].write(f"{row.get('Kasa Tutar', 0):,.0f}")
+                        cols[12].write(f"{row['Risk Puan']:.0f}")
+                        cols[13].write(row['Risk'])
                 
                 with tabs[1]:
                     st.subheader("🔴 Kritik Mağazalar")
