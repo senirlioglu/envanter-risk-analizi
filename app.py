@@ -876,39 +876,53 @@ def detect_cigarette_shortage(df):
     Sigara açığı - Tüm sigaraların TOPLAM (Fark + Kısmi + Önceki) değerine bakılır
     Eğer toplam < 0 ise sigara açığı var demektir
     
-    Sigara tespiti: Ürün Grubu veya Mal Grubu Tanımı = 'SİGARA' veya 'TÜTÜN'
+    NET = Fark Miktarı + Kısmi Envanter Miktarı + Önceki Fark Miktarı
+    
+    Sigara tespiti kuralları:
+    - Mal Grubu Tanımı veya Ürün Grubu içinde 'SİGARA' veya 'TÜTÜN' geçenler
+    - MAKARON tek başına sigara DEĞİLDİR (bilinçli olarak dışarıda tutulur)
+    - "MAKARON JEL KALEM" gibi ürünler yanlışlıkla yakalanmasın diye MAKARON dahil edilmez
     """
-    # Türkçe karakter normalize fonksiyonu
-    def normalize_turkish(text):
-        if pd.isna(text):
-            return ''
-        text = str(text).upper()
-        replacements = {'İ': 'I', 'Ş': 'S', 'Ğ': 'G', 'Ü': 'U', 'Ö': 'O', 'Ç': 'C',
-                       'ı': 'I', 'ş': 'S', 'ğ': 'G', 'ü': 'U', 'ö': 'O', 'ç': 'C'}
-        for tr_char, en_char in replacements.items():
-            text = text.replace(tr_char, en_char)
-        return text.strip()
     
-    # Önce hangi sütun mevcut kontrol et (öncelik sırasına göre)
-    sigara_col = None
-    for col in ['Ürün Grubu', 'Mal Grubu Tanımı', 'mal_grubu_tanimi']:
+    # Sigara kontrolü yapılacak kolonları belirle (öncelik sırasına göre)
+    # NOT: Malzeme Adı dahil değil - sadece kategori bazlı filtre yapılır
+    check_cols = []
+    for col in ['Mal Grubu Tanımı', 'Ürün Grubu', 'Ana Grup']:
         if col in df.columns:
-            sigara_col = col
-            break
+            check_cols.append(col)
     
-    if sigara_col is None:
+    if not check_cols:
         return pd.DataFrame()
     
-    # Sigara ürünlerini filtrele - vectorized
-    normalized_values = df[sigara_col].apply(normalize_turkish)
-    sigara_mask = normalized_values.isin(['SIGARA', 'TUTUN'])
+    # Sigara mask oluştur - CONTAINS kullan (eşitlik değil!)
+    sigara_mask = pd.Series([False] * len(df), index=df.index)
+    
+    for col in check_cols:
+        # Türkçe karakterleri normalize et
+        col_values = df[col].fillna('').astype(str).str.upper()
+        col_values = col_values.str.replace('İ', 'I', regex=False)
+        col_values = col_values.str.replace('Ş', 'S', regex=False)
+        col_values = col_values.str.replace('Ğ', 'G', regex=False)
+        col_values = col_values.str.replace('Ü', 'U', regex=False)
+        col_values = col_values.str.replace('Ö', 'O', regex=False)
+        col_values = col_values.str.replace('Ç', 'C', regex=False)
+        col_values = col_values.str.replace('ı', 'I', regex=False)
+        
+        # SIGARA veya TUTUN içeren satırları bul
+        # NOT: MAKARON tek başına dahil DEĞİL - sadece SIGARA veya TUTUN varsa
+        mask = col_values.str.contains('SIGARA|TUTUN', case=False, na=False, regex=True)
+        sigara_mask = sigara_mask | mask
+    
+    # MAKARON'u açıkça dışarıda tut (eğer SIGARA/TUTUN yoksa)
+    # Bu satır gereksiz görünebilir ama gelecekte güvenlik sağlar
+    # Şu an mask zaten sadece SIGARA|TUTUN içerenleri yakalar
     
     sigara_df = df[sigara_mask].copy()
     
     if len(sigara_df) == 0:
         return pd.DataFrame()
     
-    # Tüm sigaraların toplamını hesapla
+    # Net hesapla: Fark + Kısmi + Önceki
     toplam_fark = sigara_df['Fark Miktarı'].fillna(0).sum()
     toplam_kismi = sigara_df['Kısmi Envanter Miktarı'].fillna(0).sum()
     toplam_onceki = sigara_df['Önceki Fark Miktarı'].fillna(0).sum()
@@ -924,7 +938,7 @@ def detect_cigarette_shortage(df):
         fark = row['Fark Miktarı'] if pd.notna(row['Fark Miktarı']) else 0
         kismi = row['Kısmi Envanter Miktarı'] if pd.notna(row['Kısmi Envanter Miktarı']) else 0
         onceki = row['Önceki Fark Miktarı'] if pd.notna(row['Önceki Fark Miktarı']) else 0
-        urun_toplam = fark + kismi + onceki
+        urun_net = fark + kismi + onceki
         
         # Sadece 0 olmayan kayıtları göster
         if fark != 0 or kismi != 0 or onceki != 0:
@@ -934,7 +948,7 @@ def detect_cigarette_shortage(df):
                 'Fark': fark,
                 'Kısmi': kismi,
                 'Önceki': onceki,
-                'Ürün Toplam': urun_toplam,
+                'Ürün Toplam': urun_net,
                 'Risk': 'SİGARA'
             })
     
@@ -1285,44 +1299,24 @@ def analyze_region(df, kasa_kodlari):
     else:
         kronik_fire = pd.Series(0, index=magazalar)
     
-    # 4. Sigara Açığı - Sigara ürünlerinin toplam farkı (Fark + Kısmi + Önceki)
-    # NOT: "makaron" tek başına aranmıyor çünkü "MAKARON JEL KALEM" gibi ürünler var
-    sigara_keywords = ['sigara', 'sıgara', 'tütün', 'cigarette']
-    sigara_makaron_keywords = ['sigara makaron', 'tütün makaron', 'sarma makaron']
+    # 4. Sigara Açığı - TEK KAYNAK: detect_cigarette_shortage fonksiyonu
+    # Her mağaza için detect_cigarette_shortage çağır ve net toplamı al
+    sigara_acik_dict = {}
+    for mag in magazalar:
+        mag_df = df[df['Mağaza Kodu'] == mag]
+        cig_result = detect_cigarette_shortage(mag_df)
+        if len(cig_result) > 0:
+            # Son satır TOPLAM satırı, oradan net değeri al
+            toplam_row = cig_result[cig_result['Malzeme Kodu'] == '*** TOPLAM ***']
+            if len(toplam_row) > 0:
+                net_val = toplam_row['Ürün Toplam'].values[0]
+                sigara_acik_dict[mag] = abs(net_val) if net_val < 0 else 0
+            else:
+                sigara_acik_dict[mag] = 0
+        else:
+            sigara_acik_dict[mag] = 0
     
-    # Ürün Grubu (Mal Grubu Tanımı'ndan dönüştürülmüş) ve Malzeme Adı'nda ara
-    sigara_mask = pd.Series(False, index=df.index)
-    
-    # Olası sütun isimleri - hem orijinal hem dönüştürülmüş
-    check_cols = ['Ürün Grubu', 'Mal Grubu Tanımı', 'Malzeme Adı']
-    
-    for col in check_cols:
-        if col in df.columns:
-            col_lower = df[col].fillna('').astype(str).str.lower()
-            # Normal sigara kelimeleri
-            for kw in sigara_keywords:
-                sigara_mask = sigara_mask | col_lower.str.contains(kw, na=False, regex=False)
-            # Makaron sadece sigara/tütün ile birlikteyse
-            for kw in sigara_makaron_keywords:
-                sigara_mask = sigara_mask | col_lower.str.contains(kw, na=False, regex=False)
-    
-    # Sigara ürünlerinin fark toplamı (Fark + Kısmi + Önceki)
-    sigara_df = df[sigara_mask].copy()
-    if len(sigara_df) > 0:
-        sigara_fark = sigara_df.groupby('Mağaza Kodu').agg({
-            'Fark Miktarı': 'sum',
-            'Kısmi Envanter Miktarı': 'sum',
-            'Önceki Fark Miktarı': 'sum'
-        })
-        sigara_fark['Fark Miktarı'] = sigara_fark['Fark Miktarı'].fillna(0)
-        sigara_fark['Kısmi Envanter Miktarı'] = sigara_fark['Kısmi Envanter Miktarı'].fillna(0)
-        sigara_fark['Önceki Fark Miktarı'] = sigara_fark['Önceki Fark Miktarı'].fillna(0)
-        # Toplam = Fark + Kısmi + Önceki (tek mağaza ile aynı)
-        sigara_fark['Toplam'] = sigara_fark['Fark Miktarı'] + sigara_fark['Kısmi Envanter Miktarı'] + sigara_fark['Önceki Fark Miktarı']
-        # Sadece toplam < 0 ise açık var
-        sigara_fark['Sigara Açık'] = sigara_fark['Toplam'].apply(lambda x: abs(x) if x < 0 else 0)
-    else:
-        sigara_fark = pd.DataFrame({'Sigara Açık': []})
+    sigara_fark = pd.DataFrame.from_dict(sigara_acik_dict, orient='index', columns=['Sigara Açık'])
     
     # 5. Fire Manipülasyonu - Fire > |Fark| olan ürün sayısı
     fire_manip = df[abs(df['Fire Miktarı']) > abs(df['Fark Miktarı'].fillna(0) + df['Kısmi Envanter Miktarı'].fillna(0))].groupby('Mağaza Kodu').size()
