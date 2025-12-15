@@ -413,6 +413,178 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=900)  # 15 dakika cache
+def get_sm_summary_from_view(satis_muduru=None, donemler=None):
+    """
+    SM Özet ekranı için Supabase VIEW'den veri çek
+    PAGINATION YOK - Tek sorguda tüm mağaza özetleri gelir (~200-300 satır)
+    """
+    try:
+        query = supabase.table('v_magaza_ozet').select('*')
+        
+        if satis_muduru:
+            query = query.eq('satis_muduru', satis_muduru)
+        
+        if donemler and len(donemler) > 0:
+            query = query.in_('envanter_donemi', donemler)
+        
+        result = query.execute()
+        
+        if not result.data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(result.data)
+        
+        # Kolon isimlerini düzenle
+        column_mapping = {
+            'magaza_kodu': 'Mağaza Kodu',
+            'magaza_tanim': 'Mağaza Adı',
+            'satis_muduru': 'Satış Müdürü',
+            'bolge_sorumlusu': 'Bölge Sorumlusu',
+            'envanter_donemi': 'Envanter Dönemi',
+            'envanter_tarihi': 'Envanter Tarihi',
+            'envanter_baslangic_tarihi': 'Envanter Başlangıç Tarihi',
+            'fark_tutari': 'Fark Tutarı',
+            'kismi_tutari': 'Kısmi Tutarı',
+            'fire_tutari': 'Fire Tutarı',
+            'satis': 'Satış',
+            'fark_miktari': 'Fark Miktarı',
+            'kismi_miktari': 'Kısmi Miktarı',
+            'onceki_fark_miktari': 'Önceki Fark Miktarı',
+            'sigara_net': 'Sigara Net',
+            'ic_hirsizlik': 'İç Hırsızlık',
+        }
+        df = df.rename(columns=column_mapping)
+        
+        # Hesaplamalar
+        df['Fark'] = df['Fark Tutarı'].fillna(0) + df['Kısmi Tutarı'].fillna(0)
+        df['Fire'] = df['Fire Tutarı'].fillna(0)
+        df['Toplam Açık'] = df['Fark'] + df['Fire']
+        
+        # Oranlar
+        df['Fark %'] = (abs(df['Fark']) / df['Satış'] * 100).fillna(0)
+        df['Fire %'] = (abs(df['Fire']) / df['Satış'] * 100).fillna(0)
+        df['Toplam %'] = (abs(df['Toplam Açık']) / df['Satış'] * 100).fillna(0)
+        
+        # Gün hesabı
+        try:
+            df['Gün'] = (pd.to_datetime(df['Envanter Tarihi']) - 
+                        pd.to_datetime(df['Envanter Başlangıç Tarihi'])).dt.days
+            df['Gün'] = df['Gün'].apply(lambda x: max(1, x) if pd.notna(x) else 1)
+        except:
+            df['Gün'] = 1
+        
+        df['Günlük Fark'] = df['Fark'] / df['Gün']
+        df['Günlük Fire'] = df['Fire'] / df['Gün']
+        
+        # Sigara açığı (negatifse açık var)
+        df['Sigara'] = df['Sigara Net'].apply(lambda x: abs(x) if x < 0 else 0)
+        
+        # Risk seviyesi
+        def calc_risk(row):
+            toplam_oran = row['Toplam %']
+            if toplam_oran >= 2:
+                return '🔴 KRİTİK'
+            elif toplam_oran >= 1:
+                return '🟠 RİSKLİ'
+            elif toplam_oran >= 0.5:
+                return '🟡 DİKKAT'
+            else:
+                return '🟢 TEMİZ'
+        
+        df['Risk'] = df.apply(calc_risk, axis=1)
+        df['Risk Puan'] = df['Toplam %'] * 10
+        
+        # BS kolonu
+        df['BS'] = df['Bölge Sorumlusu']
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"VIEW hatası: {str(e)}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def get_store_summary_fast(df):
+    """
+    ⚠️ DEPRECATED - Artık Supabase VIEW kullanılıyor (v_magaza_ozet)
+    Bu fonksiyon SM/GM Özet'te KULLANILMAMALI
+    Sadece Tek Mağaza modunda Excel için gerekirse kullanılabilir
+    """
+    import warnings
+    warnings.warn("get_store_summary_fast DEPRECATED - VIEW kullanın", DeprecationWarning)
+    
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    
+    # Mağaza bazlı agregasyon
+    store_summary = df.groupby('Mağaza Kodu').agg({
+        'Mağaza Adı': 'first',
+        'Satış Müdürü': 'first',
+        'Bölge Sorumlusu': 'first',
+        'Envanter Dönemi': 'first',
+        'Envanter Tarihi': 'first',
+        'Envanter Başlangıç Tarihi': 'first',
+        'Fark Tutarı': 'sum',
+        'Kısmi Envanter Tutarı': 'sum',
+        'Fire Tutarı': 'sum',
+        'Satış Tutarı': 'sum',
+        'Fark Miktarı': 'sum',
+        'Kısmi Envanter Miktarı': 'sum',
+        'Önceki Fark Miktarı': 'sum',
+    }).reset_index()
+    
+    # Hesaplamalar
+    store_summary['Fark'] = store_summary['Fark Tutarı'] + store_summary['Kısmi Envanter Tutarı']
+    store_summary['Fire'] = store_summary['Fire Tutarı']
+    store_summary['Toplam Açık'] = store_summary['Fark'] + store_summary['Fire']
+    store_summary['Satış'] = store_summary['Satış Tutarı']
+    
+    # Oranlar
+    store_summary['Fark %'] = (abs(store_summary['Fark']) / store_summary['Satış'] * 100).fillna(0)
+    store_summary['Fire %'] = (abs(store_summary['Fire']) / store_summary['Satış'] * 100).fillna(0)
+    store_summary['Toplam %'] = (abs(store_summary['Toplam Açık']) / store_summary['Satış'] * 100).fillna(0)
+    
+    # Sigara açığı hesapla (mağaza bazlı)
+    sigara_acik = {}
+    for mag in store_summary['Mağaza Kodu'].unique():
+        mag_df = df[df['Mağaza Kodu'] == mag]
+        # Sigara filtresi
+        if 'Mal Grubu Tanımı' in mag_df.columns:
+            col_values = mag_df['Mal Grubu Tanımı'].fillna('').astype(str).str.upper()
+            col_values = col_values.str.replace('İ', 'I', regex=False)
+            col_values = col_values.str.replace('Ü', 'U', regex=False)
+            col_values = col_values.str.replace('Ö', 'O', regex=False)
+            sigara_mask = col_values.str.contains('SIGARA|TUTUN', case=False, na=False, regex=True)
+            sigara_df = mag_df[sigara_mask]
+            if len(sigara_df) > 0:
+                net = (sigara_df['Fark Miktarı'].sum() + 
+                       sigara_df['Kısmi Envanter Miktarı'].sum() + 
+                       sigara_df['Önceki Fark Miktarı'].sum())
+                sigara_acik[mag] = abs(net) if net < 0 else 0
+            else:
+                sigara_acik[mag] = 0
+        else:
+            sigara_acik[mag] = 0
+    
+    store_summary['Sigara'] = store_summary['Mağaza Kodu'].map(sigara_acik).fillna(0)
+    
+    # İç hırsızlık sayısı (Satış Fiyatı >= 100 ve Fark < 0)
+    ic_hirsizlik = {}
+    for mag in store_summary['Mağaza Kodu'].unique():
+        mag_df = df[df['Mağaza Kodu'] == mag]
+        if 'Satış Fiyatı' in mag_df.columns:
+            count = len(mag_df[(mag_df['Satış Fiyatı'] >= 100) & (mag_df['Fark Miktarı'] < 0)])
+            ic_hirsizlik[mag] = count
+        else:
+            ic_hirsizlik[mag] = 0
+    
+    store_summary['İç Hırsızlık'] = store_summary['Mağaza Kodu'].map(ic_hirsizlik).fillna(0)
+    
+    return store_summary
+
+
 # ==================== ANA UYGULAMA ====================
 
 # Çıkış butonu sağ üstte
@@ -431,10 +603,14 @@ with col_user:
         st.rerun()
 
 # ==================== VERİ YÜKLEME (1 KEZ) ====================
-# Supabase'den veri 1 kez çekilir, sonra pandas ile filtrelenir
+# ⚠️ SADECE TEK MAĞAZA MODU İÇİN - SM/GM Özet'te KULLANILMAMALI
+# SM/GM Özet → get_sm_summary_from_view() kullanır
 
 def load_all_data_once():
-    """Tüm veriyi 1 kez yükle - session_state'e kaydet - Optimized"""
+    """
+    ⚠️ SADECE TEK MAĞAZA MODU İÇİN
+    SM/GM Özet'te bu fonksiyon ÇAĞRILMAMALI - VIEW kullanılmalı
+    """
     if "df_all" not in st.session_state or st.session_state.df_all is None:
         progress_text = st.empty()
         progress_bar = st.progress(0)
@@ -496,18 +672,28 @@ def filter_data(df, satis_muduru=None, donemler=None, magaza_kodu=None):
     return filtered
 
 def get_available_periods_cached():
-    """Dönemleri session_state'den al"""
-    if "df_all" in st.session_state and st.session_state.df_all is not None and len(st.session_state.df_all) > 0:
-        periods = st.session_state.df_all['Envanter Dönemi'].dropna().unique().tolist()
-        return sorted(periods, reverse=True)
-    return get_available_periods_from_supabase()
+    """Dönemleri VIEW'den al - HAFİF"""
+    try:
+        # VIEW'den distinct dönemleri çek
+        result = supabase.table('v_magaza_ozet').select('envanter_donemi').execute()
+        if result.data:
+            periods = list(set([r['envanter_donemi'] for r in result.data if r.get('envanter_donemi')]))
+            return sorted(periods, reverse=True)
+    except:
+        pass
+    return []
 
 def get_available_sms_cached():
-    """SM'leri session_state'den al"""
-    if "df_all" in st.session_state and st.session_state.df_all is not None and len(st.session_state.df_all) > 0:
-        sms = st.session_state.df_all['Satış Müdürü'].dropna().unique().tolist()
-        return sorted(sms)
-    return get_available_sms_from_supabase()
+    """SM'leri VIEW'den al - HAFİF"""
+    try:
+        # VIEW'den distinct SM'leri çek
+        result = supabase.table('v_magaza_ozet').select('satis_muduru').execute()
+        if result.data:
+            sms = list(set([r['satis_muduru'] for r in result.data if r.get('satis_muduru')]))
+            return sorted(sms)
+    except:
+        pass
+    return []
 
 # Mobil uyumlu CSS
 st.markdown("""
@@ -2171,8 +2357,8 @@ def create_excel_report(df, internal_df, chronic_df, chronic_fire_df, cigarette_
 if analysis_mode == "👔 SM Özet":
     st.subheader("👔 SM Özet")
     
-    # Veriyi 1 kez yükle
-    df_all = load_all_data_once()
+    # ⚡ EKRAN İÇİN HAFİF VERİ - load_all_data_once ÇAĞRILMIYOR!
+    # Excel butonu basılınca tam veri çekilecek
     
     # Kullanıcı -> SM eşleştirmesi
     USER_SM_MAPPING = {
@@ -2238,24 +2424,18 @@ if analysis_mode == "👔 SM Özet":
             selected_periods = []
     
     if selected_sm_option and selected_periods:
-        # Pandas ile filtrele (Supabase çağırmadan - HIZLI)
-        df = filter_data(df_all, satis_muduru=selected_sm, donemler=selected_periods)
+        # ⚡ SÜPER HIZLI - Supabase VIEW'den direkt özet veri
+        region_df = get_sm_summary_from_view(satis_muduru=selected_sm, donemler=selected_periods)
         
-        if len(df) == 0:
+        if len(region_df) == 0:
             st.warning("Seçilen kriterlere uygun veri bulunamadı")
         else:
-            st.success(f"✅ {len(df):,} satır filtrelendi")
-            
             # Mağaza bilgisi
-            if 'Mağaza Kodu' in df.columns:
-                magazalar = df['Mağaza Kodu'].dropna().unique().tolist()
-                magaza_isimleri = {}
-                for mag in magazalar:
-                    isim = df[df['Mağaza Kodu'] == mag]['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df.columns else ''
-                    magaza_isimleri[mag] = f"{mag} - {isim}" if isim else str(mag)
-            else:
-                magazalar = []
-                magaza_isimleri = {}
+            magazalar = region_df['Mağaza Kodu'].dropna().unique().tolist()
+            magaza_isimleri = {}
+            for mag in magazalar:
+                isim = region_df[region_df['Mağaza Kodu'] == mag]['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in region_df.columns else ''
+                magaza_isimleri[mag] = f"{mag} - {isim}" if isim else str(mag)
             
             params = {
                 'donem': ', '.join(selected_periods),
@@ -2265,11 +2445,7 @@ if analysis_mode == "👔 SM Özet":
             # Kasa aktivitesi kodlarını yükle
             kasa_kodlari = load_kasa_activity_codes()
             
-            # Bölge Özeti ile aynı analiz
             st.subheader(f"📊 {display_sm} - {len(magazalar)} Mağaza")
-            
-            with st.spinner("Mağazalar analiz ediliyor..."):
-                region_df = analyze_region(df, kasa_kodlari)
             
             if len(region_df) == 0:
                 st.warning("Analiz edilecek mağaza bulunamadı!")
@@ -2385,41 +2561,49 @@ if analysis_mode == "👔 SM Özet":
                         selected_mag_kod = selected_mag_option.split(" - ")[0]
                         selected_row = region_df[region_df['Mağaza Kodu'] == selected_mag_kod].iloc[0]
                         
-                        with st.spinner("Rapor hazırlanıyor..."):
-                            df_mag = df[df['Mağaza Kodu'] == selected_mag_kod].copy()
-                            mag_adi = selected_row['Mağaza Adı']
+                        with st.spinner("📊 Mağaza verisi yükleniyor..."):
+                            # ⚡ LAZY LOAD - Sadece bu mağaza için tam veri çek
+                            df_full = get_data_from_supabase(satis_muduru=selected_sm, donemler=selected_periods)
                             
-                            # Analizleri yap
-                            int_df = detect_internal_theft(df_mag)
-                            chr_df = detect_chronic_products(df_mag)
-                            chr_fire_df = detect_chronic_fire(df_mag)
-                            cig_df = detect_cigarette_shortage(df_mag)
-                            ext_df = detect_external_theft(df_mag)
-                            fam_df = find_product_families(df_mag)
-                            fire_df = detect_fire_manipulation(df_mag)
-                            kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
-                            
-                            int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
-                            chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
-                            
-                            t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
-                            exec_c, grp_s = generate_executive_summary(df_mag, kasa_df, kasa_sum)
-                            
-                            report_data = create_excel_report(
-                                df_mag, int_df, chr_df, chr_fire_df, cig_df,
-                                ext_df, fam_df, fire_df, kasa_df, t20_df,
-                                exec_c, grp_s, selected_mag_kod, mag_adi, params
-                            )
-                            
-                            mag_adi_clean = mag_adi.replace(' ', '_').replace('/', '_')[:30] if mag_adi else ''
-                            
-                            st.download_button(
-                                "📥 İndir", 
-                                data=report_data,
-                                file_name=f"{selected_mag_kod}_{mag_adi_clean}_Risk_Raporu.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="sm_download_report"
-                            )
+                            if len(df_full) > 0:
+                                df_analyzed = analyze_inventory(df_full)
+                                df_mag = df_analyzed[df_analyzed['Mağaza Kodu'] == selected_mag_kod].copy()
+                                mag_adi = selected_row['Mağaza Adı']
+                                
+                                # Analizleri yap
+                                int_df = detect_internal_theft(df_mag)
+                                chr_df = detect_chronic_products(df_mag)
+                                chr_fire_df = detect_chronic_fire(df_mag)
+                                cig_df = detect_cigarette_shortage(df_mag)
+                                ext_df = detect_external_theft(df_mag)
+                                fam_df = find_product_families(df_mag)
+                                fire_df = detect_fire_manipulation(df_mag)
+                                kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
+                                
+                                int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
+                                chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
+                                
+                                t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
+                                exec_c, grp_s = generate_executive_summary(df_mag, kasa_df, kasa_sum)
+                                
+                                report_data = create_excel_report(
+                                    df_mag, int_df, chr_df, chr_fire_df, cig_df,
+                                    ext_df, fam_df, fire_df, kasa_df, t20_df,
+                                    exec_c, grp_s, selected_mag_kod, mag_adi, params
+                                )
+                                
+                                mag_adi_clean = mag_adi.replace(' ', '_').replace('/', '_')[:30] if mag_adi else ''
+                                
+                                st.download_button(
+                                    "📥 İndir", 
+                                    data=report_data,
+                                    file_name=f"{selected_mag_kod}_{mag_adi_clean}_Risk_Raporu.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="sm_download_report"
+                                )
+                                st.success("✅ Rapor hazır!")
+                            else:
+                                st.error("Veri çekilemedi!")
                 
                 with tabs[1]:
                     st.subheader("🔴 Kritik Mağazalar")
@@ -2460,21 +2644,33 @@ if analysis_mode == "👔 SM Özet":
                 with tabs[5]:
                     st.subheader("📥 SM Raporu İndir")
                     
-                    excel_data = create_region_excel_report(region_df, df, kasa_kodlari, params)
-                    
-                    st.download_button(
-                        label=f"📥 {display_sm} Özet Raporu (Excel)",
-                        data=excel_data,
-                        file_name=f"SM_OZET_{display_sm}_{params.get('donem', '')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                    # ⚡ LAZY LOAD - Excel butonu basılınca tam veri çekilir
+                    if st.button("📊 Excel Raporu Hazırla", key="prepare_sm_excel"):
+                        with st.spinner("📊 Detaylı veri yükleniyor..."):
+                            # Tam veri çek (sadece bu SM için)
+                            df_full = get_data_from_supabase(satis_muduru=selected_sm, donemler=selected_periods)
+                            
+                            if len(df_full) > 0:
+                                df_analyzed = analyze_inventory(df_full)
+                                
+                                # Excel oluştur
+                                excel_data = create_region_excel_report(region_df, df_analyzed, kasa_kodlari, params)
+                                
+                                st.download_button(
+                                    label=f"📥 {display_sm} Özet Raporu (Excel)",
+                                    data=excel_data,
+                                    file_name=f"SM_OZET_{display_sm}_{params.get('donem', '')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+                                st.success("✅ Excel hazır!")
+                            else:
+                                st.error("Veri çekilemedi!")
 
 # GM Özet modu - Sadece GM için
 elif analysis_mode == "🌍 GM Özet":
     st.subheader("🌍 GM Özet - Bölge Dashboard")
     
-    # Veriyi 1 kez yükle
-    df_all = load_all_data_once()
+    # ⚡ VIEW KULLAN - load_all_data_once YOK
     
     # Dönem seçimi - cache'den al
     available_periods = get_available_periods_cached()
@@ -2486,15 +2682,13 @@ elif analysis_mode == "🌍 GM Özet":
         st.warning("Henüz veri yüklenmemiş. SM'ler Excel yükledikçe veriler burada görünecek.")
     
     if selected_periods:
-        # Pandas ile filtrele (Supabase çağırmadan - HIZLI)
-        df = filter_data(df_all, donemler=selected_periods)
+        # ⚡ SÜPER HIZLI - Supabase VIEW'den direkt özet veri (TÜM SM'ler)
+        region_df = get_sm_summary_from_view(satis_muduru=None, donemler=selected_periods)
         
-        if len(df) == 0:
+        if len(region_df) == 0:
             st.warning("Seçilen döneme ait veri bulunamadı")
         else:
-            st.success(f"✅ {len(df):,} satır filtrelendi")
-            
-            magazalar = df['Mağaza Kodu'].dropna().unique().tolist()
+            magazalar = region_df['Mağaza Kodu'].dropna().unique().tolist()
             
             params = {
                 'donem': ', '.join(selected_periods),
@@ -2504,19 +2698,13 @@ elif analysis_mode == "🌍 GM Özet":
             # Kasa aktivitesi kodlarını yükle
             kasa_kodlari = load_kasa_activity_codes()
             
-            # Bölge analizi
-            with st.spinner("Mağazalar analiz ediliyor..."):
-                region_df = analyze_region(df, kasa_kodlari)
-                
-                # SM sütunu ekle
-                if 'SM' not in region_df.columns and 'Satış Müdürü' in df.columns:
-                    for idx, row in region_df.iterrows():
-                        mag_kod = row['Mağaza Kodu']
-                        sm = df[df['Mağaza Kodu'] == mag_kod]['Satış Müdürü'].iloc[0] if len(df[df['Mağaza Kodu'] == mag_kod]) > 0 else ''
-                        region_df.at[idx, 'SM'] = sm
-                
-                sm_df = aggregate_by_group(region_df, 'SM') if 'SM' in region_df.columns else pd.DataFrame()
-                bs_df = aggregate_by_group(region_df, 'BS')
+            # SM sütunu ekle (VIEW'de zaten var)
+            if 'SM' not in region_df.columns:
+                region_df['SM'] = region_df['Satış Müdürü']
+            
+            # SM ve BS agregasyonları
+            sm_df = aggregate_by_group(region_df, 'SM') if 'SM' in region_df.columns else pd.DataFrame()
+            bs_df = aggregate_by_group(region_df, 'BS') if 'BS' in region_df.columns else pd.DataFrame()
             
             if len(region_df) == 0:
                 st.error("Analiz edilecek mağaza bulunamadı!")
