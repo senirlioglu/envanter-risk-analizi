@@ -362,7 +362,21 @@ def load_all_data_once():
         with st.spinner("📊 Veriler yükleniyor (ilk yükleme)..."):
             df_raw = get_data_from_supabase(satis_muduru=None, donemler=None)
             if len(df_raw) > 0:
-                st.session_state.df_all = analyze_inventory(df_raw)
+                df_analyzed = analyze_inventory(df_raw)
+                
+                # Duplicate'ları kaldır (aynı mağaza + dönem + depolama + malzeme)
+                # Son yüklenen kayıt kalır
+                duplicate_cols = ['Mağaza Kodu', 'Envanter Dönemi', 'Depolama Koşulu Grubu', 'Malzeme Kodu']
+                existing_cols = [c for c in duplicate_cols if c in df_analyzed.columns]
+                
+                if existing_cols:
+                    before_count = len(df_analyzed)
+                    df_analyzed = df_analyzed.drop_duplicates(subset=existing_cols, keep='last')
+                    after_count = len(df_analyzed)
+                    if before_count > after_count:
+                        st.info(f"🧹 {before_count - after_count:,} duplicate kayıt kaldırıldı")
+                
+                st.session_state.df_all = df_analyzed
                 st.session_state.df_all_loaded_at = datetime.now()
             else:
                 st.session_state.df_all = pd.DataFrame()
