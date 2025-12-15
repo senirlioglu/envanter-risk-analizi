@@ -1189,10 +1189,13 @@ def analyze_region(df, kasa_kodlari):
     sigara_keywords = ['sigara', 'sıgara', 'tütün', 'cigarette']
     sigara_makaron_keywords = ['sigara makaron', 'tütün makaron', 'sarma makaron']
     
-    # Hem Mal Grubu Tanımı hem Malzeme Adı'nda ara
+    # Ürün Grubu (Mal Grubu Tanımı'ndan dönüştürülmüş) ve Malzeme Adı'nda ara
     sigara_mask = pd.Series(False, index=df.index)
     
-    for col in ['Mal Grubu Tanımı', 'Malzeme Adı']:
+    # Olası sütun isimleri - hem orijinal hem dönüştürülmüş
+    check_cols = ['Ürün Grubu', 'Mal Grubu Tanımı', 'Malzeme Adı']
+    
+    for col in check_cols:
         if col in df.columns:
             col_lower = df[col].fillna('').astype(str).str.lower()
             # Normal sigara kelimeleri
