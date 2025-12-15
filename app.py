@@ -1100,7 +1100,7 @@ def analyze_region(df, kasa_kodlari):
     else:
         kronik_fire = pd.Series(0, index=magazalar)
     
-    # 4. Sigara Açığı - Sigara ürünlerinin toplam farkı
+    # 4. Sigara Açığı - Sigara ürünlerinin toplam farkı (Fark + Kısmi + Önceki)
     sigara_keywords = ['sigara', 'sıgara', 'makaron', 'tütün', 'cigarette']
     
     # Hem Mal Grubu Tanımı hem Malzeme Adı'nda ara
@@ -1112,16 +1112,20 @@ def analyze_region(df, kasa_kodlari):
             for kw in sigara_keywords:
                 sigara_mask = sigara_mask | col_lower.str.contains(kw, na=False, regex=False)
     
-    # Sigara ürünlerinin fark toplamı
+    # Sigara ürünlerinin fark toplamı (Fark + Kısmi + Önceki)
     sigara_df = df[sigara_mask].copy()
     if len(sigara_df) > 0:
         sigara_fark = sigara_df.groupby('Mağaza Kodu').agg({
             'Fark Miktarı': 'sum',
-            'Kısmi Envanter Miktarı': 'sum'
+            'Kısmi Envanter Miktarı': 'sum',
+            'Önceki Fark Miktarı': 'sum'
         })
         sigara_fark['Fark Miktarı'] = sigara_fark['Fark Miktarı'].fillna(0)
         sigara_fark['Kısmi Envanter Miktarı'] = sigara_fark['Kısmi Envanter Miktarı'].fillna(0)
-        sigara_fark['Toplam'] = sigara_fark['Fark Miktarı'] + sigara_fark['Kısmi Envanter Miktarı']
+        sigara_fark['Önceki Fark Miktarı'] = sigara_fark['Önceki Fark Miktarı'].fillna(0)
+        # Toplam = Fark + Kısmi + Önceki (tek mağaza ile aynı)
+        sigara_fark['Toplam'] = sigara_fark['Fark Miktarı'] + sigara_fark['Kısmi Envanter Miktarı'] + sigara_fark['Önceki Fark Miktarı']
+        # Sadece toplam < 0 ise açık var
         sigara_fark['Sigara Açık'] = sigara_fark['Toplam'].apply(lambda x: abs(x) if x < 0 else 0)
     else:
         sigara_fark = pd.DataFrame({'Sigara Açık': []})
