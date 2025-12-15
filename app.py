@@ -2248,75 +2248,66 @@ if analysis_mode == "👔 SM Özet":
                 with tabs[0]:
                     st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
                     
-                    # Başlık satırı
-                    cols = st.columns([0.4, 0.8, 1.3, 1.2, 0.9, 0.7, 0.9, 0.7, 0.6, 0.6, 0.4, 0.5, 0.8])
-                    cols[0].markdown("**📥**")
-                    cols[1].markdown("**Kod**")
-                    cols[2].markdown("**Mağaza Adı**")
-                    cols[3].markdown("**BS**")
-                    cols[4].markdown("**Fark**")
-                    cols[5].markdown("**Günlük**")
-                    cols[6].markdown("**Fire**")
-                    cols[7].markdown("**Günlük**")
-                    cols[8].markdown("**Kayıp%**")
-                    cols[9].markdown("**Fire%**")
-                    cols[10].markdown("**🚬**")
-                    cols[11].markdown("**Risk**")
-                    cols[12].markdown("**Seviye**")
+                    # Basit tablo göster - analiz yapmadan
+                    display_cols = ['Mağaza Kodu', 'Mağaza Adı', 'BS', 'Satış', 'Fark', 'Fire', 
+                                   'Toplam %', 'Sigara', 'İç Hırs.', 'Risk Puan', 'Risk']
                     
+                    # Formatla
+                    display_df = region_df[display_cols].copy()
+                    display_df['Satış'] = display_df['Satış'].apply(lambda x: f"{x/1000:.0f}K")
+                    display_df['Fark'] = display_df['Fark'].apply(lambda x: f"{x/1000:.0f}K")
+                    display_df['Fire'] = display_df['Fire'].apply(lambda x: f"{x/1000:.0f}K")
+                    display_df['Toplam %'] = display_df['Toplam %'].apply(lambda x: f"%{x:.1f}")
+                    display_df['Risk Puan'] = display_df['Risk Puan'].apply(lambda x: f"{x:.0f}")
+                    
+                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
+                    
+                    # Tek mağaza raporu için seçim
                     st.markdown("---")
+                    st.markdown("**📥 Mağaza Raporu İndir**")
                     
-                    # Veri satırları
-                    for idx, (_, row) in enumerate(region_df.iterrows()):
-                        cols = st.columns([0.4, 0.8, 1.3, 1.2, 0.9, 0.7, 0.9, 0.7, 0.6, 0.6, 0.4, 0.5, 0.8])
+                    mag_options = [f"{row['Mağaza Kodu']} - {row['Mağaza Adı']}" for _, row in region_df.iterrows()]
+                    selected_mag_option = st.selectbox("Mağaza seçin", mag_options, key="sm_mag_select")
+                    
+                    if st.button("📥 Rapor Oluştur", key="sm_create_report"):
+                        selected_mag_kod = selected_mag_option.split(" - ")[0]
+                        selected_row = region_df[region_df['Mağaza Kodu'] == selected_mag_kod].iloc[0]
                         
-                        # Mağaza verisini al ve tam rapor oluştur
-                        mag_kod = row['Mağaza Kodu']
-                        df_mag = df[df['Mağaza Kodu'] == mag_kod].copy()
-                        mag_adi = row['Mağaza Adı']
-                        
-                        # Analizleri yap
-                        int_df = detect_internal_theft(df_mag)
-                        chr_df = detect_chronic_products(df_mag)
-                        chr_fire_df = detect_chronic_fire(df_mag)
-                        cig_df = detect_cigarette_shortage(df_mag)
-                        ext_df = detect_external_theft(df_mag)
-                        fam_df = find_product_families(df_mag)
-                        fire_df = detect_fire_manipulation(df_mag)
-                        kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
-                        
-                        int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
-                        chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
-                        
-                        t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
-                        exec_c, grp_s = generate_executive_summary(df_mag, kasa_df, kasa_sum)
-                        
-                        # Tam rapor oluştur
-                        report_data = create_excel_report(
-                            df_mag, int_df, chr_df, chr_fire_df, cig_df,
-                            ext_df, fam_df, fire_df, kasa_df, t20_df,
-                            exec_c, grp_s, mag_kod, mag_adi, params
-                        )
-                        
-                        mag_adi_clean = mag_adi.replace(' ', '_').replace('/', '_')[:30] if mag_adi else ''
-                        
-                        with cols[0]:
-                            st.download_button("📥", data=report_data, 
-                                file_name=f"{mag_kod}_{mag_adi_clean}_Risk_Raporu.xlsx",
+                        with st.spinner("Rapor hazırlanıyor..."):
+                            df_mag = df[df['Mağaza Kodu'] == selected_mag_kod].copy()
+                            mag_adi = selected_row['Mağaza Adı']
+                            
+                            # Analizleri yap
+                            int_df = detect_internal_theft(df_mag)
+                            chr_df = detect_chronic_products(df_mag)
+                            chr_fire_df = detect_chronic_fire(df_mag)
+                            cig_df = detect_cigarette_shortage(df_mag)
+                            ext_df = detect_external_theft(df_mag)
+                            fam_df = find_product_families(df_mag)
+                            fire_df = detect_fire_manipulation(df_mag)
+                            kasa_df, kasa_sum = check_kasa_activity_products(df_mag, kasa_kodlari)
+                            
+                            int_codes = set(int_df['Malzeme Kodu'].astype(str).tolist()) if len(int_df) > 0 else set()
+                            chr_codes = set(chr_df['Malzeme Kodu'].astype(str).tolist()) if len(chr_df) > 0 else set()
+                            
+                            t20_df = create_top_20_risky(df_mag, int_codes, chr_codes, set())
+                            exec_c, grp_s = generate_executive_summary(df_mag, kasa_df, kasa_sum)
+                            
+                            report_data = create_excel_report(
+                                df_mag, int_df, chr_df, chr_fire_df, cig_df,
+                                ext_df, fam_df, fire_df, kasa_df, t20_df,
+                                exec_c, grp_s, selected_mag_kod, mag_adi, params
+                            )
+                            
+                            mag_adi_clean = mag_adi.replace(' ', '_').replace('/', '_')[:30] if mag_adi else ''
+                            
+                            st.download_button(
+                                "📥 İndir", 
+                                data=report_data,
+                                file_name=f"{selected_mag_kod}_{mag_adi_clean}_Risk_Raporu.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key=f"sm_dl_{idx}")
-                        cols[1].write(f"{row['Mağaza Kodu']}")
-                        cols[2].write(f"{row['Mağaza Adı'][:18] if row['Mağaza Adı'] else '-'}")
-                        cols[3].write(f"{row['BS'][:12] if row['BS'] else '-'}")
-                        cols[4].write(f"{row['Fark']/1000:.0f}K")
-                        cols[5].write(f"{row['Günlük Fark']/1000:.1f}K")
-                        cols[6].write(f"{row['Fire']/1000:.0f}K")
-                        cols[7].write(f"{row['Günlük Fire']/1000:.1f}K")
-                        cols[8].write(f"%{row['Toplam %']:.1f}")
-                        cols[9].write(f"%{row['Fire %']:.1f}")
-                        cols[10].write(f"{row['Sigara']:.0f}" if row['Sigara'] > 0 else "-")
-                        cols[11].write(f"{row['Risk Puan']:.0f}")
-                        cols[12].write(row['Risk'])
+                                key="sm_download_report"
+                            )
                 
                 with tabs[1]:
                     st.subheader("🔴 Kritik Mağazalar")
