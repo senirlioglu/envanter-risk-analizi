@@ -44,17 +44,13 @@ IPTAL_SHEET_NAME = 'IptalVerisi'
 
 @st.cache_data(ttl=300)  # 5 dakika cache
 def get_iptal_verisi_from_sheets():
-    """Google Sheets'ten iptal verisini çeker (public sheet gerekli)"""
+    """Google Sheets'ten iptal verisini çeker (public sheet gerekli) - CACHE YOK"""
     try:
         csv_url = f'https://docs.google.com/spreadsheets/d/{IPTAL_SHEETS_ID}/gviz/tq?tqx=out:csv&sheet={IPTAL_SHEET_NAME}'
         df = pd.read_csv(csv_url, encoding='utf-8')
         df.columns = df.columns.str.strip()
-        print(f"DEBUG: Google Sheets'ten {len(df)} satır çekildi")
-        print(f"DEBUG: Sütunlar: {list(df.columns)[:5]}")
         return df
     except Exception as e:
-        # Hata durumunda logla
-        print(f"DEBUG HATA: Google Sheets veri çekme hatası: {e}")
         return pd.DataFrame()
 
 
@@ -63,40 +59,52 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     df_iptal = get_iptal_verisi_from_sheets()
     
     if df_iptal.empty:
-        print(f"DEBUG: df_iptal BOŞ!")
         return {}
     
-    print(f"DEBUG: Mağaza {magaza_kodu} için arama yapılıyor, {len(malzeme_kodlari)} ürün")
-    
-    # Sütun isimlerini bul (STS_BW_10 formatına göre)
+    # Sabit sütun isimleri - Google Sheets'teki gerçek isimler
+    # Önce tam eşleşme dene, yoksa içeren ara
     col_mapping = {}
+    
     for col in df_iptal.columns:
-        col_lower = col.lower()
-        
-        # Mağaza kodu - "Mağaza - Anahtar"
-        if 'anahtar' in col_lower and 'malzeme' not in col_lower:
-            if 'mağaza' in col_lower or 'magaza' in col_lower or ('ma' in col_lower and 'aza' in col_lower):
+        col_upper = col.upper()
+        # Mağaza - Anahtar sütunu
+        if 'ANAHTAR' in col_upper and 'MAĞAZA' in col_upper.replace('Ğ', 'G').replace('A', 'A'):
+            if 'MALZEME' not in col_upper:
                 col_mapping['magaza'] = col
-        # Malzeme kodu - "Malzeme - Anahtar"
-        elif 'anahtar' in col_lower and 'malzeme' in col_lower:
+        elif col_upper == 'MAĞAZA - ANAHTAR' or 'MAĞAZA' in col_upper and 'ANAHTAR' in col_upper:
+            if 'MALZEME' not in col_upper:
+                col_mapping['magaza'] = col
+        # Malzeme - Anahtar sütunu  
+        if 'ANAHTAR' in col_upper and 'MALZEME' in col_upper:
             col_mapping['malzeme'] = col
         # Tarih
-        elif col_lower == 'tarih':
+        if col == 'Tarih' or col_upper == 'TARIH':
             col_mapping['tarih'] = col
-        # Saat - "Fiş Saati"
-        elif 'saati' in col_lower and 'anahtar' not in col_lower:
-            col_mapping['saat'] = col
+        # Fiş Saati
+        if 'SAATİ' in col_upper or 'SAATI' in col_upper:
+            if 'ANAHTAR' not in col_upper:
+                col_mapping['saat'] = col
         # Miktar
-        elif col_lower == 'miktar':
+        if col_upper == 'MİKTAR' or col_upper == 'MIKTAR':
             col_mapping['miktar'] = col
-        # İşlem numarası
-        elif 'numaras' in col_lower and 'anahtar' not in col_lower:
+        # İşlem Numarası
+        if 'NUMARASI' in col_upper and 'ANAHTAR' not in col_upper:
             col_mapping['islem_no'] = col
     
-    print(f"DEBUG: col_mapping = {col_mapping}")
+    # Eğer bulunamadıysa - index ile dene (Google Sheets sütun sırası)
+    cols = df_iptal.columns.tolist()
+    if 'magaza' not in col_mapping and len(cols) > 7:
+        col_mapping['magaza'] = cols[7]  # Mağaza - Anahtar genelde 8. sütun
+    if 'malzeme' not in col_mapping and len(cols) > 17:
+        col_mapping['malzeme'] = cols[17]  # Malzeme - Anahtar genelde 18. sütun
+    if 'tarih' not in col_mapping and len(cols) > 0:
+        col_mapping['tarih'] = cols[0]  # Tarih genelde 1. sütun
+    if 'saat' not in col_mapping and len(cols) > 31:
+        col_mapping['saat'] = cols[31]  # Fiş Saati genelde 32. sütun
+    if 'islem_no' not in col_mapping and len(cols) > 36:
+        col_mapping['islem_no'] = cols[36]  # İşlem Numarası genelde 37. sütun
     
     if 'magaza' not in col_mapping or 'malzeme' not in col_mapping:
-        print(f"DEBUG: Sütun eşleştirmesi BAŞARISIZ!")
         return {}
     
     # Mağaza filtrele
@@ -3427,17 +3435,25 @@ elif uploaded_file is not None:
             internal_df = detect_internal_theft(df_display)
             
             # Kamera timestamp entegrasyonu
+            st.info(f"🔍 İç Hırsızlık: {len(internal_df)} ürün bulundu")
             if len(internal_df) > 0:
                 try:
                     magaza_kodu = df_display['Mağaza Kodu'].iloc[0]
                     envanter_tarihi = df_display['Envanter Tarihi'].iloc[0]
-                    print(f"DEBUG MAIN: Kamera entegrasyonu başlıyor - Mağaza: {magaza_kodu}")
+                    st.info(f"📹 Kamera entegrasyonu başlıyor - Mağaza: {magaza_kodu}")
+                    
+                    # Debug: Sheets verisini kontrol et
+                    df_sheets_test = get_iptal_verisi_from_sheets()
+                    st.write(f"📥 Sheets satır sayısı: {len(df_sheets_test)}")
+                    if not df_sheets_test.empty:
+                        st.write(f"📌 İlk 5 sütun: {list(df_sheets_test.columns)[:5]}")
+                    
                     internal_df = enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi)
-                    print(f"DEBUG MAIN: Kamera entegrasyonu tamamlandı")
+                    st.success(f"✅ Kamera entegrasyonu tamamlandı")
                 except Exception as e:
-                    print(f"DEBUG MAIN HATA: {e}")
+                    st.error(f"❌ Kamera entegrasyonu hatası: {e}")
                     import traceback
-                    traceback.print_exc()
+                    st.code(traceback.format_exc())
             
             chronic_df = detect_chronic_products(df_display)
             chronic_fire_df = detect_chronic_fire(df_display)
