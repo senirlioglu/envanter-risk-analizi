@@ -74,6 +74,9 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     if df_iptal.empty:
         return {}
     
+    # CACHE MUTATE SORUNU - Kopya al!
+    df_iptal = df_iptal.copy()
+    
     # Sabit sütun isimleri - doğrudan kullan
     col_magaza = 'Mağaza - Anahtar'
     col_malzeme = 'Malzeme - Anahtar'
@@ -514,13 +517,8 @@ def save_to_supabase(df_original):
         return 0, 0, f"Hata: {str(e)}"
 
 
-@st.cache_data(ttl=600)  # 10 dakika cache
-# ⚠️ SİLİNDİ: get_available_periods_from_supabase
-# Artık VIEW üzerinden alınıyor: get_available_periods_cached()
-
-
-# ⚠️ SİLİNDİ: get_available_sms_from_supabase
-# Artık VIEW üzerinden alınıyor: get_available_sms_cached()
+# get_available_periods_from_supabase kaldırıldı - get_available_periods_cached() kullanılıyor
+# get_available_sms_from_supabase kaldırıldı - get_available_sms_cached() kullanılıyor
 
 
 @st.cache_data(ttl=600)  # 10 dakika cache
@@ -578,6 +576,9 @@ def get_single_store_data(magaza_kodu, donemler=None):
             
             if donemler and len(donemler) > 0:
                 query = query.in_('envanter_donemi', list(donemler))
+            
+            # ORDER ÖNEMLİ - Pagination için tutarlı sıralama
+            query = query.order('id')
             
             query = query.range(offset, offset + batch_size - 1)
             result = query.execute()
@@ -663,6 +664,9 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             # Dönem filtresi
             if donemler and len(donemler) > 0:
                 query = query.in_('envanter_donemi', donemler)
+            
+            # ORDER ÖNEMLİ - Pagination için tutarlı sıralama şart
+            query = query.order('id')
             
             # Pagination - limit ve offset
             query = query.range(offset, offset + batch_size - 1)
@@ -1080,6 +1084,8 @@ with col_mode:
 with col_refresh:
     if analysis_mode in ["👔 SM Özet", "🌍 GM Özet"]:
         if st.button("🔄", help="Verileri yenile"):
+            # Tüm cache'leri temizle
+            st.cache_data.clear()
             if "df_all" in st.session_state:
                 del st.session_state.df_all
             st.rerun()
