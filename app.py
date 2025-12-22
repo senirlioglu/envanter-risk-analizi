@@ -517,7 +517,6 @@ def get_available_stores_from_supabase():
         return {}
 
 
-@st.cache_data(ttl=300)  # 5 dakika cache
 @st.cache_data(ttl=300, show_spinner=False)
 def get_single_store_data(magaza_kodu, donemler=None):
     """
@@ -621,7 +620,7 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             iteration += 1
             
             # Sorgu oluştur - sadece gerekli sütunlar
-            query = supabase.table('envanter_veri').select(required_columns, count='exact')
+            query = supabase.table('envanter_veri').select(required_columns)
             
             if satis_muduru:
                 query = query.eq('satis_muduru', satis_muduru)
@@ -957,12 +956,20 @@ def filter_data(df, satis_muduru=None, donemler=None, magaza_kodu=None):
     
     return filtered
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def get_available_periods_cached():
-    """Dönemleri VIEW'den al - HAFİF ve CACHED"""
+    """Dönemleri distinct VIEW'den al - HIZLI"""
     try:
-        # VIEW'den distinct dönemleri çek
-        result = supabase.table('v_magaza_ozet').select('envanter_donemi').execute()
+        # v_distinct_donem VIEW'ı yoksa fallback
+        try:
+            result = supabase.table('v_distinct_donem').select('envanter_donemi').execute()
+        except:
+            # Fallback: ana tablodan distinct çek
+            result = supabase.rpc('get_distinct_donemler').execute()
+            if not result.data:
+                # Son fallback
+                result = supabase.table('envanter_veri').select('envanter_donemi').limit(1000).execute()
+        
         if result.data:
             periods = list(set([r['envanter_donemi'] for r in result.data if r.get('envanter_donemi')]))
             return sorted(periods, reverse=True)
@@ -970,12 +977,17 @@ def get_available_periods_cached():
         st.error(f"Dönem verisi alınamadı: {e}")
     return []
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def get_available_sms_cached():
-    """SM'leri VIEW'den al - HAFİF ve CACHED"""
+    """SM'leri distinct VIEW'den al - HIZLI"""
     try:
-        # VIEW'den distinct SM'leri çek
-        result = supabase.table('v_magaza_ozet').select('satis_muduru').execute()
+        # v_distinct_sm VIEW'ı yoksa fallback
+        try:
+            result = supabase.table('v_distinct_sm').select('satis_muduru').execute()
+        except:
+            # Fallback
+            result = supabase.table('envanter_veri').select('satis_muduru').limit(1000).execute()
+        
         if result.data:
             sms = list(set([r['satis_muduru'] for r in result.data if r.get('satis_muduru')]))
             return sorted(sms)
@@ -983,7 +995,7 @@ def get_available_sms_cached():
         st.error(f"SM verisi alınamadı: {e}")
     return []
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def get_envanter_tarihleri_by_donem(donemler_tuple):
     """Seçilen dönemlerdeki envanter tarihlerini getir - CACHED"""
     try:
@@ -1061,10 +1073,16 @@ def analyze_inventory(df):
     """Veriyi analiz için hazırla"""
     df = df.copy()
     
-    # DUPLICATE TEMİZLEME - Aynı mağaza + aynı malzeme sadece 1 kez olmalı
-    # Birden fazla depolama koşulu veya dönem varsa en son olanı al
-    if 'Mağaza Kodu' in df.columns and 'Malzeme Kodu' in df.columns:
-        df = df.drop_duplicates(subset=['Mağaza Kodu', 'Malzeme Kodu'], keep='first')
+    # DUPLICATE TEMİZLEME - Doğru key ile
+    # Aynı mağaza + dönem + depolama + malzeme sadece 1 kez olmalı
+    dup_key = ['Mağaza Kodu', 'Envanter Dönemi', 'Depolama Koşulu Grubu', 'Malzeme Kodu']
+    dup_key = [c for c in dup_key if c in df.columns]
+    if dup_key:
+        # Envanter tarihi varsa en yeniyi tut
+        if 'Envanter Tarihi' in df.columns:
+            df['Envanter Tarihi'] = pd.to_datetime(df['Envanter Tarihi'], errors='coerce')
+            df = df.sort_values('Envanter Tarihi', ascending=False)
+        df = df.drop_duplicates(subset=dup_key, keep='first')
     
     col_mapping = {
         'Mağaza Kodu': 'Mağaza Kodu',
