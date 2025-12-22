@@ -516,6 +516,16 @@ def save_to_supabase(df_original):
             except Exception as e:
                 st.warning(f"Batch {i//batch_size + 1} hatası: {str(e)[:100]}")
         
+        # ✅ MATERIALIZED VIEW REFRESH - Veri yüklendikten sonra
+        if inserted > 0:
+            try:
+                # RPC ile refresh çağır (Supabase'de function oluşturulmalı)
+                supabase.rpc('refresh_mv_magaza_ozet').execute()
+            except Exception as e:
+                # RPC yoksa veya hata verirse sessizce devam et
+                # MV manuel refresh edilebilir
+                pass
+        
         new_list = [k.replace('|', ' / ') for k in new_env_keys]
         return inserted, len(skipped_env_keys), f"Yüklenen: {', '.join(new_list[:3])}..."
         
