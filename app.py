@@ -47,10 +47,12 @@ def get_iptal_verisi_from_sheets():
     """Google Sheets'ten iptal verisini çeker (public sheet gerekli)"""
     try:
         csv_url = f'https://docs.google.com/spreadsheets/d/{IPTAL_SHEETS_ID}/gviz/tq?tqx=out:csv&sheet={IPTAL_SHEET_NAME}'
-        df = pd.read_csv(csv_url)
+        df = pd.read_csv(csv_url, encoding='utf-8')
         df.columns = df.columns.str.strip()
         return df
     except Exception as e:
+        # Hata durumunda logla
+        print(f"Google Sheets veri çekme hatası: {e}")
         return pd.DataFrame()
 
 
@@ -62,28 +64,27 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         return {}
     
     # Sütun isimlerini bul (STS_BW_10 formatına göre)
-    # NOT: Google Sheets CSV export'unda Türkçe karakterler bozulabiliyor
     col_mapping = {}
     for col in df_iptal.columns:
         col_lower = col.lower()
         
-        # Mağaza kodu - "Mağaza - Anahtar" veya bozuk "MaÄŸaza - Anahtar"
-        if 'anahtar' in col_lower and ('mağaza' in col_lower or ('ma' in col_lower and 'aza' in col_lower)):
-            if 'malzeme' not in col_lower:
+        # Mağaza kodu - "Mağaza - Anahtar"
+        if 'anahtar' in col_lower and 'malzeme' not in col_lower:
+            if 'mağaza' in col_lower or 'magaza' in col_lower or ('ma' in col_lower and 'aza' in col_lower):
                 col_mapping['magaza'] = col
         # Malzeme kodu - "Malzeme - Anahtar"
         elif 'anahtar' in col_lower and 'malzeme' in col_lower:
             col_mapping['malzeme'] = col
         # Tarih
-        elif col_lower == 'tarih' or col_lower == 'tarih - anahtar':
+        elif col_lower == 'tarih':
             col_mapping['tarih'] = col
-        # Saat - "Fiş Saati" veya bozuk "FiÅŸ Saati"
+        # Saat - "Fiş Saati"
         elif 'saati' in col_lower and 'anahtar' not in col_lower:
             col_mapping['saat'] = col
         # Miktar
         elif col_lower == 'miktar':
             col_mapping['miktar'] = col
-        # İşlem numarası - "İşlem Numarası" veya bozuk versiyonu
+        # İşlem numarası
         elif 'numaras' in col_lower and 'anahtar' not in col_lower:
             col_mapping['islem_no'] = col
     
