@@ -61,80 +61,56 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     if df_iptal.empty:
         return {}
     
-    # Sabit sütun isimleri - Google Sheets'teki gerçek isimler
-    # Önce tam eşleşme dene, yoksa içeren ara
-    col_mapping = {}
+    # Sabit sütun isimleri - doğrudan kullan
+    col_magaza = 'Mağaza - Anahtar'
+    col_malzeme = 'Malzeme - Anahtar'
+    col_tarih = 'Tarih - Anahtar'  # Tarih boş, Tarih - Anahtar dolu
+    col_saat = 'Fiş Saati'
+    col_miktar = 'Miktar'
+    col_islem_no = 'İşlem Numarası'
     
-    for col in df_iptal.columns:
-        col_upper = col.upper()
-        # Mağaza - Anahtar sütunu
-        if 'ANAHTAR' in col_upper and 'MAĞAZA' in col_upper.replace('Ğ', 'G').replace('A', 'A'):
-            if 'MALZEME' not in col_upper:
-                col_mapping['magaza'] = col
-        elif col_upper == 'MAĞAZA - ANAHTAR' or 'MAĞAZA' in col_upper and 'ANAHTAR' in col_upper:
-            if 'MALZEME' not in col_upper:
-                col_mapping['magaza'] = col
-        # Malzeme - Anahtar sütunu  
-        if 'ANAHTAR' in col_upper and 'MALZEME' in col_upper:
-            col_mapping['malzeme'] = col
-        # Tarih - "Tarih - Anahtar" sütunu (Tarih boş gelebilir)
-        if col == 'Tarih - Anahtar' or col_upper == 'TARİH - ANAHTAR':
-            col_mapping['tarih'] = col
-        elif (col == 'Tarih' or col_upper == 'TARIH') and 'tarih' not in col_mapping:
-            col_mapping['tarih'] = col
-        # Fiş Saati
-        if 'SAATİ' in col_upper or 'SAATI' in col_upper:
-            if 'ANAHTAR' not in col_upper:
-                col_mapping['saat'] = col
-        # Miktar
-        if col_upper == 'MİKTAR' or col_upper == 'MIKTAR':
-            col_mapping['miktar'] = col
-        # İşlem Numarası
-        if 'NUMARASI' in col_upper and 'ANAHTAR' not in col_upper:
-            col_mapping['islem_no'] = col
-    
-    # Eğer bulunamadıysa - index ile dene (Google Sheets sütun sırası)
+    # Sütunlar yoksa index ile dene
     cols = df_iptal.columns.tolist()
-    if 'magaza' not in col_mapping and len(cols) > 7:
-        col_mapping['magaza'] = cols[7]  # Mağaza - Anahtar genelde 8. sütun
-    if 'malzeme' not in col_mapping and len(cols) > 17:
-        col_mapping['malzeme'] = cols[17]  # Malzeme - Anahtar genelde 18. sütun
-    if 'tarih' not in col_mapping and len(cols) > 3:
-        col_mapping['tarih'] = cols[3]  # Tarih - Anahtar genelde 4. sütun (index 3)
-    if 'saat' not in col_mapping and len(cols) > 31:
-        col_mapping['saat'] = cols[31]  # Fiş Saati genelde 32. sütun
-    if 'islem_no' not in col_mapping and len(cols) > 36:
-        col_mapping['islem_no'] = cols[36]  # İşlem Numarası genelde 37. sütun
+    if col_magaza not in cols and len(cols) > 7:
+        col_magaza = cols[7]
+    if col_malzeme not in cols and len(cols) > 17:
+        col_malzeme = cols[17]
+    if col_tarih not in cols and len(cols) > 3:
+        col_tarih = cols[3]
+    if col_saat not in cols and len(cols) > 31:
+        col_saat = cols[31]
+    if col_islem_no not in cols and len(cols) > 36:
+        col_islem_no = cols[36]
     
-    if 'magaza' not in col_mapping or 'malzeme' not in col_mapping:
-        return {}
+    # Mağaza ve Malzeme kodlarını temizle
+    def clean_code(x):
+        return str(x).strip().replace('.0', '')
+    
+    df_iptal[col_magaza] = df_iptal[col_magaza].apply(clean_code)
+    df_iptal[col_malzeme] = df_iptal[col_malzeme].apply(clean_code)
     
     # Mağaza filtrele
-    # .0 sonekini temizle (Excel float formatı)
-    df_iptal[col_mapping['magaza']] = df_iptal[col_mapping['magaza']].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    df_mag = df_iptal[df_iptal[col_mapping['magaza']] == str(magaza_kodu).strip().replace('.0', '')]
+    magaza_str = clean_code(magaza_kodu)
+    df_mag = df_iptal[df_iptal[col_magaza] == magaza_str]
     
     if df_mag.empty:
         return {}
     
-    # Malzeme kodlarıyla eşleştir
-    df_mag = df_mag.copy()
-    # .0 sonekini temizle (Excel float formatı)
-    df_mag[col_mapping['malzeme']] = df_mag[col_mapping['malzeme']].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    malzeme_set = set(str(m).strip().replace('.0', '') for m in malzeme_kodlari)
+    # Malzeme kodlarını temizle
+    malzeme_set = set(clean_code(m) for m in malzeme_kodlari)
     
     result = {}
     
     for _, row in df_mag.iterrows():
-        malzeme = str(row[col_mapping['malzeme']]).strip()
+        malzeme = clean_code(row[col_malzeme])
         
         if malzeme not in malzeme_set:
             continue
         
-        tarih = row.get(col_mapping.get('tarih', 'Tarih'), '')
-        saat = row.get(col_mapping.get('saat', 'Saat'), '')
-        miktar = row.get(col_mapping.get('miktar', 'Miktar'), 0)
-        islem_no = row.get(col_mapping.get('islem_no', 'İşlem No'), '')
+        tarih = row.get(col_tarih, '')
+        saat = row.get(col_saat, '')
+        miktar = row.get(col_miktar, 0)
+        islem_no = row.get(col_islem_no, '')
         
         if malzeme not in result:
             result[malzeme] = []
@@ -3448,7 +3424,11 @@ elif uploaded_file is not None:
                     df_sheets_test = get_iptal_verisi_from_sheets()
                     st.write(f"📥 Sheets satır sayısı: {len(df_sheets_test)}")
                     if not df_sheets_test.empty:
-                        st.write(f"📌 İlk 5 sütun: {list(df_sheets_test.columns)[:5]}")
+                        # 7915 mağazası için kayıt sayısı
+                        mag_col = 'Mağaza - Anahtar' if 'Mağaza - Anahtar' in df_sheets_test.columns else df_sheets_test.columns[7]
+                        df_sheets_test[mag_col] = df_sheets_test[mag_col].astype(str).str.replace('.0', '', regex=False)
+                        mag_count = len(df_sheets_test[df_sheets_test[mag_col] == str(magaza_kodu)])
+                        st.write(f"🏪 Mağaza {magaza_kodu} iptal sayısı: {mag_count}")
                     
                     internal_df = enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi)
                     st.success(f"✅ Kamera entegrasyonu tamamlandı")
