@@ -513,6 +513,86 @@ def get_available_stores_from_supabase():
 
 
 @st.cache_data(ttl=300)  # 5 dakika cache
+@st.cache_data(ttl=300, show_spinner=False)
+def get_single_store_data(magaza_kodu, donemler=None):
+    """
+    Tek mağaza için veri çek - HIZLI
+    Sadece belirli mağazanın verisini çeker, tüm bölgeyi değil
+    """
+    try:
+        all_data = []
+        batch_size = 1000
+        offset = 0
+        
+        required_columns = ','.join([
+            'magaza_kodu', 'magaza_tanim', 'satis_muduru', 'bolge_sorumlusu',
+            'depolama_kosulu_grubu', 'depolama_kosulu', 'envanter_donemi', 'envanter_tarihi', 'envanter_baslangic_tarihi',
+            'mal_grubu_tanimi', 'malzeme_kodu', 'malzeme_tanimi', 'satis_fiyati',
+            'fark_miktari', 'fark_tutari', 'kismi_envanter_miktari', 'kismi_envanter_tutari',
+            'fire_miktari', 'fire_tutari', 'onceki_fark_miktari', 'onceki_fire_miktari',
+            'satis_miktari', 'satis_hasilati', 'iptal_satir_miktari'
+        ])
+        
+        for _ in range(50):  # Max 50K satır
+            query = supabase.table('envanter_veri').select(required_columns)
+            query = query.eq('magaza_kodu', str(magaza_kodu))
+            
+            if donemler and len(donemler) > 0:
+                query = query.in_('envanter_donemi', list(donemler))
+            
+            query = query.range(offset, offset + batch_size - 1)
+            result = query.execute()
+            
+            if not result.data:
+                break
+            
+            all_data.extend(result.data)
+            
+            if len(result.data) < batch_size:
+                break
+            
+            offset += batch_size
+        
+        if not all_data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(all_data)
+        
+        reverse_mapping = {
+            'magaza_kodu': 'Mağaza Kodu',
+            'magaza_tanim': 'Mağaza Adı',
+            'satis_muduru': 'Satış Müdürü',
+            'bolge_sorumlusu': 'Bölge Sorumlusu',
+            'depolama_kosulu_grubu': 'Depolama Koşulu Grubu',
+            'depolama_kosulu': 'Depolama Koşulu',
+            'envanter_donemi': 'Envanter Dönemi',
+            'envanter_tarihi': 'Envanter Tarihi',
+            'envanter_baslangic_tarihi': 'Envanter Başlangıç Tarihi',
+            'mal_grubu_tanimi': 'Mal Grubu Tanımı',
+            'malzeme_kodu': 'Malzeme Kodu',
+            'malzeme_tanimi': 'Malzeme Tanımı',
+            'satis_fiyati': 'Satış Fiyatı',
+            'fark_miktari': 'Fark Miktarı',
+            'fark_tutari': 'Fark Tutarı',
+            'kismi_envanter_miktari': 'Kısmi Envanter Miktarı',
+            'kismi_envanter_tutari': 'Kısmi Envanter Tutarı',
+            'fire_miktari': 'Fire Miktarı',
+            'fire_tutari': 'Fire Tutarı',
+            'onceki_fark_miktari': 'Önceki Fark Miktarı',
+            'onceki_fire_miktari': 'Önceki Fire Miktarı',
+            'satis_miktari': 'Satış Miktarı',
+            'satis_hasilati': 'Satış Tutarı',
+            'iptal_satir_miktari': 'İptal Satır Miktarı'
+        }
+        
+        df = df.rename(columns=reverse_mapping)
+        return df
+        
+    except Exception as e:
+        st.error(f"Veri çekme hatası: {e}")
+        return pd.DataFrame()
+
+
 def get_data_from_supabase(satis_muduru=None, donemler=None):
     """Supabase'den veri çek ve DataFrame'e çevir - Optimize edilmiş"""
     try:
@@ -872,35 +952,39 @@ def filter_data(df, satis_muduru=None, donemler=None, magaza_kodu=None):
     
     return filtered
 
+@st.cache_data(ttl=60)
 def get_available_periods_cached():
-    """Dönemleri VIEW'den al - HAFİF"""
+    """Dönemleri VIEW'den al - HAFİF ve CACHED"""
     try:
         # VIEW'den distinct dönemleri çek
         result = supabase.table('v_magaza_ozet').select('envanter_donemi').execute()
         if result.data:
             periods = list(set([r['envanter_donemi'] for r in result.data if r.get('envanter_donemi')]))
             return sorted(periods, reverse=True)
-    except:
-        pass
+    except Exception as e:
+        st.error(f"Dönem verisi alınamadı: {e}")
     return []
 
+@st.cache_data(ttl=60)
 def get_available_sms_cached():
-    """SM'leri VIEW'den al - HAFİF"""
+    """SM'leri VIEW'den al - HAFİF ve CACHED"""
     try:
         # VIEW'den distinct SM'leri çek
         result = supabase.table('v_magaza_ozet').select('satis_muduru').execute()
         if result.data:
             sms = list(set([r['satis_muduru'] for r in result.data if r.get('satis_muduru')]))
             return sorted(sms)
-    except:
-        pass
+    except Exception as e:
+        st.error(f"SM verisi alınamadı: {e}")
     return []
 
-def get_envanter_tarihleri_by_donem(donemler):
-    """Seçilen dönemlerdeki envanter tarihlerini getir"""
+@st.cache_data(ttl=60)
+def get_envanter_tarihleri_by_donem(donemler_tuple):
+    """Seçilen dönemlerdeki envanter tarihlerini getir - CACHED"""
     try:
-        if not donemler:
+        if not donemler_tuple:
             return []
+        donemler = list(donemler_tuple)  # tuple'ı list'e çevir
         query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
         result = query.execute()
         if result.data:
@@ -971,6 +1055,11 @@ else:
 def analyze_inventory(df):
     """Veriyi analiz için hazırla"""
     df = df.copy()
+    
+    # DUPLICATE TEMİZLEME - Aynı mağaza + aynı malzeme sadece 1 kez olmalı
+    # Birden fazla depolama koşulu veya dönem varsa en son olanı al
+    if 'Mağaza Kodu' in df.columns and 'Malzeme Kodu' in df.columns:
+        df = df.drop_duplicates(subset=['Mağaza Kodu', 'Malzeme Kodu'], keep='first')
     
     col_mapping = {
         'Mağaza Kodu': 'Mağaza Kodu',
@@ -1160,7 +1249,7 @@ def detect_internal_theft(df):
         results.append({
             'Malzeme Kodu': row.get('Malzeme Kodu', ''),
             'Malzeme Adı': row.get('Malzeme Adı', ''),
-            'Ürün Grubu': row.get('Ürün Grubu', ''),
+            'Ürün Grubu': row.get('Mal Grubu Tanımı', row.get('Ürün Grubu', '')),
             'Satış Fiyatı': satis_fiyati,
             'Fark Miktarı': fark,
             'Kısmi Env.': kismi,
@@ -1174,7 +1263,12 @@ def detect_internal_theft(df):
         })
     
     result_df = pd.DataFrame(results)
+    
     if len(result_df) > 0:
+        # DUPLICATE TEMİZLEME - Aynı malzeme kodu sadece 1 kez görünsün
+        result_df = result_df.drop_duplicates(subset=['Malzeme Kodu'], keep='first')
+        
+        # Risk sıralaması
         risk_order = {'ÇOK YÜKSEK': 0, 'YÜKSEK': 1, 'ORTA': 2, 'DÜŞÜK-ORTA': 3}
         result_df['_risk_sort'] = result_df['Risk'].map(risk_order)
         result_df = result_df.sort_values(['_risk_sort', 'Fark Tutarı (TL)'], ascending=[True, True])
@@ -1195,7 +1289,7 @@ def detect_chronic_products(df):
             results.append({
                 'Malzeme Kodu': row.get('Malzeme Kodu', ''),
                 'Malzeme Adı': row.get('Malzeme Adı', ''),
-                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Ürün Grubu': row.get('Mal Grubu Tanımı', row.get('Ürün Grubu', '')),
                 'Bu Dönem Fark': row['Fark Miktarı'],
                 'Bu Dönem Tutar': row['Fark Tutarı'],
                 'Önceki Fark': row['Önceki Fark Miktarı'],
@@ -1205,6 +1299,8 @@ def detect_chronic_products(df):
     
     result_df = pd.DataFrame(results)
     if len(result_df) > 0:
+        # DUPLICATE TEMİZLEME
+        result_df = result_df.drop_duplicates(subset=['Malzeme Kodu'], keep='first')
         result_df = result_df.sort_values('Bu Dönem Tutar', ascending=True)
     
     return result_df
@@ -1230,7 +1326,7 @@ def detect_chronic_fire(df):
             results.append({
                 'Malzeme Kodu': row.get('Malzeme Kodu', ''),
                 'Malzeme Adı': row.get('Malzeme Adı', ''),
-                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Ürün Grubu': row.get('Mal Grubu Tanımı', row.get('Ürün Grubu', '')),
                 'Bu Dönem Fire': bu_fire,
                 'Bu Dönem Fire Tutarı': row['Fire Tutarı'],
                 'Önceki Fire': onceki_fire,
@@ -1240,6 +1336,8 @@ def detect_chronic_fire(df):
     
     result_df = pd.DataFrame(results)
     if len(result_df) > 0:
+        # DUPLICATE TEMİZLEME
+        result_df = result_df.drop_duplicates(subset=['Malzeme Kodu'], keep='first')
         result_df = result_df.sort_values('Bu Dönem Fire Tutarı', ascending=True)
     
     return result_df
@@ -1265,7 +1363,7 @@ def detect_fire_manipulation(df):
             results.append({
                 'Malzeme Kodu': row.get('Malzeme Kodu', ''),
                 'Malzeme Adı': row.get('Malzeme Adı', ''),
-                'Ürün Grubu': row.get('Ürün Grubu', ''),
+                'Ürün Grubu': row.get('Mal Grubu Tanımı', row.get('Ürün Grubu', '')),
                 'Fark Miktarı': fark,
                 'Kısmi Env.': kismi,
                 'Önceki Fark': onceki_fark,
@@ -1277,6 +1375,8 @@ def detect_fire_manipulation(df):
     
     result_df = pd.DataFrame(results)
     if len(result_df) > 0:
+        # DUPLICATE TEMİZLEME
+        result_df = result_df.drop_duplicates(subset=['Malzeme Kodu'], keep='first')
         result_df = result_df.sort_values('Fire Tutarı', ascending=True)
     
     return result_df
@@ -1365,6 +1465,8 @@ def detect_cigarette_shortage(df):
     
     result_df = pd.DataFrame(results)
     if len(result_df) > 0:
+        # DUPLICATE TEMİZLEME
+        result_df = result_df.drop_duplicates(subset=['Malzeme Kodu'], keep='first')
         result_df = result_df.sort_values('Ürün Toplam', ascending=True)
         # En sona toplam satırı ekle
         toplam_row = pd.DataFrame([{
@@ -2362,6 +2464,9 @@ def create_top_20_risky(df, internal_codes, chronic_codes, family_balanced_codes
     if len(risky_df) == 0:
         return pd.DataFrame()
     
+    # DUPLICATE TEMİZLEME - önce yap
+    risky_df = risky_df.drop_duplicates(subset=['Malzeme Kodu'], keep='first')
+    
     def classify(row):
         kod = str(row.get('Malzeme Kodu', ''))
         
@@ -2725,7 +2830,7 @@ if analysis_mode == "👔 SM Özet":
     
     if selected_periods:
         # Seçilen dönemlerdeki envanter tarihlerini getir
-        donem_tarihleri = get_envanter_tarihleri_by_donem(selected_periods)
+        donem_tarihleri = get_envanter_tarihleri_by_donem(tuple(selected_periods))
         
         if donem_tarihleri and len(donem_tarihleri) > 1:
             with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
@@ -2879,7 +2984,7 @@ if analysis_mode == "👔 SM Özet":
                 
                 # Sekmeler - Bölge Özeti ile aynı
                 st.markdown("---")
-                tabs = st.tabs(["📋 Sıralama", "🔴 Kritik", "🟠 Riskli", "🚬 Sigara", "📊 Detay", "📥 İndir"])
+                tabs = st.tabs(["📋 Sıralama", "🔴 Kritik", "🟠 Riskli", "🚬 Sigara", "🔍 Mağaza Detay", "📥 İndir"])
                 
                 with tabs[0]:
                     st.subheader("📋 Mağaza Sıralaması (Risk Puanına Göre)")
@@ -2918,13 +3023,12 @@ if analysis_mode == "👔 SM Özet":
                         selected_mag_kod = selected_mag_option.split(" - ")[0]
                         selected_row = region_df[region_df['Mağaza Kodu'] == selected_mag_kod].iloc[0]
                         
-                        with st.spinner("📊 Mağaza verisi yükleniyor..."):
-                            # ⚡ LAZY LOAD - Sadece bu mağaza için tam veri çek
-                            df_full = get_data_from_supabase(satis_muduru=selected_sm, donemler=selected_periods)
+                        with st.spinner("📊 Mağaza verisi yükleniyor (bu işlem 5-10 saniye sürebilir)..."):
+                            # ⚡ HIZLI - Sadece bu mağaza için veri çek
+                            df_mag = get_single_store_data(selected_mag_kod, tuple(selected_periods) if selected_periods else None)
                             
-                            if len(df_full) > 0:
-                                df_analyzed = analyze_inventory(df_full)
-                                df_mag = df_analyzed[df_analyzed['Mağaza Kodu'] == selected_mag_kod].copy()
+                            if len(df_mag) > 0:
+                                df_mag = analyze_inventory(df_mag)
                                 mag_adi = selected_row['Mağaza Adı']
                                 
                                 # Analizleri yap
@@ -3022,8 +3126,70 @@ if analysis_mode == "👔 SM Özet":
                         st.success("Sigara açığı olan mağaza yok! 🎉")
                 
                 with tabs[4]:
-                    st.subheader("📊 Tüm Detaylar")
-                    st.dataframe(region_df, use_container_width=True, hide_index=True)
+                    st.subheader("🔍 Mağaza Detay Görünümü")
+                    st.info("Bir mağaza seçerek İç Hırsızlık, Kronik Ürünler ve Sigara detaylarını görüntüleyebilirsiniz.")
+                    
+                    # Mağaza seçimi
+                    mag_options_detay = [f"{row['Mağaza Kodu']} - {row['Mağaza Adı']}" for _, row in region_df.iterrows()]
+                    selected_mag_detay = st.selectbox("📍 Mağaza Seçin", mag_options_detay, key="sm_mag_detay_select")
+                    
+                    if st.button("🔍 Detayları Getir", key="sm_get_details"):
+                        selected_mag_kod_detay = selected_mag_detay.split(" - ")[0]
+                        
+                        with st.spinner("📊 Mağaza detayları yükleniyor..."):
+                            # Sadece bu mağazanın verisini çek
+                            df_mag_detay = get_single_store_data(selected_mag_kod_detay, tuple(selected_periods) if selected_periods else None)
+                            
+                            if len(df_mag_detay) > 0:
+                                df_mag_detay = analyze_inventory(df_mag_detay)
+                                
+                                # İç Hırsızlık analizi
+                                int_df_detay = detect_internal_theft(df_mag_detay)
+                                
+                                # Kamera entegrasyonu
+                                if len(int_df_detay) > 0:
+                                    try:
+                                        env_tarihi_detay = df_mag_detay['Envanter Tarihi'].iloc[0]
+                                        int_df_detay = enrich_internal_theft_with_camera(int_df_detay, selected_mag_kod_detay, env_tarihi_detay, full_df=df_mag_detay)
+                                    except Exception as e:
+                                        st.warning(f"Kamera entegrasyonu hatası: {e}")
+                                
+                                # Kronik ve Sigara
+                                chr_df_detay = detect_chronic_products(df_mag_detay)
+                                cig_df_detay = detect_cigarette_shortage(df_mag_detay)
+                                
+                                # Sonuçları göster
+                                detay_tabs = st.tabs(["🔒 İç Hırsızlık", "🔄 Kronik Ürünler", "🚬 Sigara"])
+                                
+                                with detay_tabs[0]:
+                                    st.markdown(f"### 🔒 İç Hırsızlık Şüphelileri ({len(int_df_detay)} ürün)")
+                                    if len(int_df_detay) > 0:
+                                        # Gösterilecek sütunlar
+                                        display_cols_int = ['Malzeme Kodu', 'Malzeme Adı', 'Satış Fiyatı', 'TOPLAM', 
+                                                           'İptal Satır', 'Durum', 'Risk', 'Fark Tutarı (TL)']
+                                        if 'KAMERA KONTROL DETAY' in int_df_detay.columns:
+                                            display_cols_int.append('KAMERA KONTROL DETAY')
+                                        
+                                        available_cols = [c for c in display_cols_int if c in int_df_detay.columns]
+                                        st.dataframe(int_df_detay[available_cols], use_container_width=True, hide_index=True)
+                                    else:
+                                        st.success("İç hırsızlık şüphelisi ürün bulunamadı! ✅")
+                                
+                                with detay_tabs[1]:
+                                    st.markdown(f"### 🔄 Kronik Açık Ürünler ({len(chr_df_detay)} ürün)")
+                                    if len(chr_df_detay) > 0:
+                                        st.dataframe(chr_df_detay, use_container_width=True, hide_index=True)
+                                    else:
+                                        st.success("Kronik açık ürün bulunamadı! ✅")
+                                
+                                with detay_tabs[2]:
+                                    st.markdown(f"### 🚬 Sigara Analizi")
+                                    if len(cig_df_detay) > 0:
+                                        st.dataframe(cig_df_detay, use_container_width=True, hide_index=True)
+                                    else:
+                                        st.success("Sigara açığı bulunamadı! ✅")
+                            else:
+                                st.error("Mağaza verisi bulunamadı")
                 
                 with tabs[5]:
                     st.subheader("📥 SM Raporu İndir")
@@ -3071,7 +3237,7 @@ elif analysis_mode == "🌍 GM Özet":
     
     if selected_periods:
         # Seçilen dönemlerdeki envanter tarihlerini getir
-        donem_tarihleri = get_envanter_tarihleri_by_donem(selected_periods)
+        donem_tarihleri = get_envanter_tarihleri_by_donem(tuple(selected_periods))
         
         if donem_tarihleri and len(donem_tarihleri) > 1:
             with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
@@ -3189,7 +3355,7 @@ elif analysis_mode == "🌍 GM Özet":
                 r4.markdown(f'<div class="risk-temiz">🟢 TEMİZ: {temiz_sayisi}</div>', unsafe_allow_html=True)
                 
                 # Sekmeler
-                tabs = st.tabs(["👔 SM Özet", "📋 BS Özet", "🏪 Mağazalar", "📊 Top 10", "🚬 Sigara", "📥 İndir"])
+                tabs = st.tabs(["👔 SM Özet", "📋 BS Özet", "🏪 Mağazalar", "📊 Top 10", "🚬 Sigara", "🔍 Mağaza Detay", "📥 İndir"])
                 
                 with tabs[0]:
                     st.subheader("👔 Satış Müdürü Bazlı Özet")
@@ -3305,6 +3471,71 @@ elif analysis_mode == "🌍 GM Özet":
                         st.success("Sigara açığı olan mağaza yok! 🎉")
                 
                 with tabs[5]:
+                    st.subheader("🔍 Mağaza Detay Görünümü")
+                    st.info("Bir mağaza seçerek İç Hırsızlık, Kronik Ürünler ve Sigara detaylarını görüntüleyebilirsiniz.")
+                    
+                    # Mağaza seçimi
+                    mag_options_gm_detay = [f"{row['Mağaza Kodu']} - {row['Mağaza Adı']}" for _, row in region_df.iterrows()]
+                    selected_mag_gm_detay = st.selectbox("📍 Mağaza Seçin", mag_options_gm_detay, key="gm_mag_detay_select")
+                    
+                    if st.button("🔍 Detayları Getir", key="gm_get_details"):
+                        selected_mag_kod_gm_detay = selected_mag_gm_detay.split(" - ")[0]
+                        
+                        with st.spinner("📊 Mağaza detayları yükleniyor..."):
+                            # Sadece bu mağazanın verisini çek
+                            df_mag_gm_detay = get_single_store_data(selected_mag_kod_gm_detay, tuple(selected_periods) if selected_periods else None)
+                            
+                            if len(df_mag_gm_detay) > 0:
+                                df_mag_gm_detay = analyze_inventory(df_mag_gm_detay)
+                                
+                                # İç Hırsızlık analizi
+                                int_df_gm_detay = detect_internal_theft(df_mag_gm_detay)
+                                
+                                # Kamera entegrasyonu
+                                if len(int_df_gm_detay) > 0:
+                                    try:
+                                        env_tarihi_gm_detay = df_mag_gm_detay['Envanter Tarihi'].iloc[0]
+                                        int_df_gm_detay = enrich_internal_theft_with_camera(int_df_gm_detay, selected_mag_kod_gm_detay, env_tarihi_gm_detay, full_df=df_mag_gm_detay)
+                                    except Exception as e:
+                                        st.warning(f"Kamera entegrasyonu hatası: {e}")
+                                
+                                # Kronik ve Sigara
+                                chr_df_gm_detay = detect_chronic_products(df_mag_gm_detay)
+                                cig_df_gm_detay = detect_cigarette_shortage(df_mag_gm_detay)
+                                
+                                # Sonuçları göster
+                                gm_detay_tabs = st.tabs(["🔒 İç Hırsızlık", "🔄 Kronik Ürünler", "🚬 Sigara"])
+                                
+                                with gm_detay_tabs[0]:
+                                    st.markdown(f"### 🔒 İç Hırsızlık Şüphelileri ({len(int_df_gm_detay)} ürün)")
+                                    if len(int_df_gm_detay) > 0:
+                                        display_cols_gm = ['Malzeme Kodu', 'Malzeme Adı', 'Satış Fiyatı', 'TOPLAM', 
+                                                          'İptal Satır', 'Durum', 'Risk', 'Fark Tutarı (TL)']
+                                        if 'KAMERA KONTROL DETAY' in int_df_gm_detay.columns:
+                                            display_cols_gm.append('KAMERA KONTROL DETAY')
+                                        
+                                        available_cols_gm = [c for c in display_cols_gm if c in int_df_gm_detay.columns]
+                                        st.dataframe(int_df_gm_detay[available_cols_gm], use_container_width=True, hide_index=True)
+                                    else:
+                                        st.success("İç hırsızlık şüphelisi ürün bulunamadı! ✅")
+                                
+                                with gm_detay_tabs[1]:
+                                    st.markdown(f"### 🔄 Kronik Açık Ürünler ({len(chr_df_gm_detay)} ürün)")
+                                    if len(chr_df_gm_detay) > 0:
+                                        st.dataframe(chr_df_gm_detay, use_container_width=True, hide_index=True)
+                                    else:
+                                        st.success("Kronik açık ürün bulunamadı! ✅")
+                                
+                                with gm_detay_tabs[2]:
+                                    st.markdown(f"### 🚬 Sigara Analizi")
+                                    if len(cig_df_gm_detay) > 0:
+                                        st.dataframe(cig_df_gm_detay, use_container_width=True, hide_index=True)
+                                    else:
+                                        st.success("Sigara açığı bulunamadı! ✅")
+                            else:
+                                st.error("Mağaza verisi bulunamadı")
+                
+                with tabs[6]:
                     st.subheader("📥 Raporları İndir")
                     
                     # GM Excel raporu
@@ -3316,6 +3547,72 @@ elif analysis_mode == "🌍 GM Özet":
                         file_name=f"GM_BOLGE_DASHBOARD_{params.get('donem', '')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
+                    
+                    st.markdown("---")
+                    
+                    # Tek mağaza raporu indirme
+                    st.markdown("**📥 Mağaza Detay Raporu İndir**")
+                    
+                    mag_options_gm = [f"{row['Mağaza Kodu']} - {row['Mağaza Adı']}" for _, row in region_df.iterrows()]
+                    selected_mag_gm = st.selectbox("Mağaza seçin", mag_options_gm, key="gm_mag_select")
+                    
+                    if st.button("📥 Mağaza Raporu Oluştur", key="gm_create_mag_report"):
+                        selected_mag_kod_gm = selected_mag_gm.split(" - ")[0]
+                        selected_row_gm = region_df[region_df['Mağaza Kodu'] == selected_mag_kod_gm].iloc[0]
+                        
+                        with st.spinner("📊 Mağaza verisi yükleniyor (5-10 saniye)..."):
+                            # ⚡ HIZLI - Sadece bu mağaza için veri çek
+                            df_mag_gm = get_single_store_data(selected_mag_kod_gm, tuple(selected_periods) if selected_periods else None)
+                            
+                            if len(df_mag_gm) > 0:
+                                df_mag_gm = analyze_inventory(df_mag_gm)
+                                mag_adi_gm = selected_row_gm['Mağaza Adı']
+                                
+                                # Kasa kodlarını yükle
+                                kasa_kodlari_gm = load_kasa_activity_codes()
+                                
+                                # Analizleri yap
+                                int_df_gm = detect_internal_theft(df_mag_gm)
+                                
+                                if len(int_df_gm) > 0:
+                                    try:
+                                        env_tarihi_gm = df_mag_gm['Envanter Tarihi'].iloc[0]
+                                        int_df_gm = enrich_internal_theft_with_camera(int_df_gm, selected_mag_kod_gm, env_tarihi_gm, full_df=df_mag_gm)
+                                    except:
+                                        pass
+                                
+                                chr_df_gm = detect_chronic_products(df_mag_gm)
+                                chr_fire_df_gm = detect_chronic_fire(df_mag_gm)
+                                cig_df_gm = detect_cigarette_shortage(df_mag_gm)
+                                ext_df_gm = detect_external_theft(df_mag_gm)
+                                fam_df_gm = find_product_families(df_mag_gm)
+                                fire_df_gm = detect_fire_manipulation(df_mag_gm)
+                                kasa_df_gm, kasa_sum_gm = check_kasa_activity_products(df_mag_gm, kasa_kodlari_gm)
+                                
+                                int_codes_gm = set(int_df_gm['Malzeme Kodu'].astype(str).tolist()) if len(int_df_gm) > 0 else set()
+                                chr_codes_gm = set(chr_df_gm['Malzeme Kodu'].astype(str).tolist()) if len(chr_df_gm) > 0 else set()
+                                
+                                t20_df_gm = create_top_20_risky(df_mag_gm, int_codes_gm, chr_codes_gm, set())
+                                exec_c_gm, grp_s_gm = generate_executive_summary(df_mag_gm, kasa_df_gm, kasa_sum_gm)
+                                
+                                report_data_gm = create_excel_report(
+                                    df_mag_gm, int_df_gm, chr_df_gm, chr_fire_df_gm, cig_df_gm,
+                                    ext_df_gm, fam_df_gm, fire_df_gm, kasa_df_gm, t20_df_gm,
+                                    exec_c_gm, grp_s_gm, selected_mag_kod_gm, mag_adi_gm, params
+                                )
+                                
+                                mag_adi_clean_gm = mag_adi_gm.replace(' ', '_').replace('/', '_')[:30] if mag_adi_gm else ''
+                                
+                                st.download_button(
+                                    "📥 İndir", 
+                                    data=report_data_gm,
+                                    file_name=f"{selected_mag_kod_gm}_{mag_adi_clean_gm}_Risk_Raporu.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="gm_download_mag_report"
+                                )
+                                st.success(f"✅ {selected_mag_kod_gm} raporu hazır!")
+                            else:
+                                st.error("Mağaza verisi bulunamadı")
                     
                     st.markdown("---")
                     st.markdown("""
