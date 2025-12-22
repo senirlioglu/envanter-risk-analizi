@@ -14,6 +14,19 @@ from supabase import create_client, Client
 # Mobil uyumlu sayfa ayarı
 st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon="📊")
 
+
+# ==================== HELPER FONKSİYONLAR ====================
+def _get_price_col(df: pd.DataFrame) -> pd.Series:
+    """Fiyat kolonunu bul - farklı kolon isimlerini destekler"""
+    if 'Satış Fiyatı' in df.columns:
+        return pd.to_numeric(df['Satış Fiyatı'], errors='coerce').fillna(0)
+    if 'Birim Fiyat' in df.columns:
+        return pd.to_numeric(df['Birim Fiyat'], errors='coerce').fillna(0)
+    if 'satis_fiyati' in df.columns:
+        return pd.to_numeric(df['satis_fiyati'], errors='coerce').fillna(0)
+    return pd.Series(0, index=df.index, dtype=float)
+
+
 # ==================== CONFIG YÜKLEME ====================
 def load_risk_weights():
     """Risk ağırlıklarını config dosyasından yükle"""
@@ -169,8 +182,9 @@ def enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi,
             kategori = row.get(kategori_col, '')
             if kategori and kategori not in kategori_urunleri:
                 # Bu kategorideki 100+ TL ürünleri bul
-                if kategori_col in full_df.columns and 'Satış Fiyatı' in full_df.columns:
-                    kat_mask = (full_df[kategori_col] == kategori) & (full_df['Satış Fiyatı'] >= 100)
+                if kategori_col in full_df.columns:
+                    price = _get_price_col(full_df)
+                    kat_mask = (full_df[kategori_col] == kategori) & (price >= 100)
                     kat_urunler = full_df.loc[kat_mask, 'Malzeme Kodu'].astype(str).unique().tolist()
                     kategori_urunleri[kategori] = kat_urunler
     
@@ -1838,8 +1852,10 @@ def compute_sigara_acik_by_store(df: pd.DataFrame) -> pd.Series:
     if sig_df.empty:
         return pd.Series(dtype=float)
     
-    # Net değeri hesapla
-    sig_df['net'] = sig_df.get('Fark Miktarı', pd.Series(0)).fillna(0)
+    # Net değeri hesapla - DOĞRU YOL (alignment sorunu yok)
+    sig_df['net'] = 0.0
+    if 'Fark Miktarı' in sig_df.columns:
+        sig_df['net'] += sig_df['Fark Miktarı'].fillna(0)
     if 'Kısmi Envanter Miktarı' in sig_df.columns:
         sig_df['net'] += sig_df['Kısmi Envanter Miktarı'].fillna(0)
     if 'Önceki Fark Miktarı' in sig_df.columns:
@@ -1904,11 +1920,9 @@ def analyze_region(df, kasa_kodlari):
     
     # ===== HIZLI RİSK ANALİZLERİ (vektörel) =====
     
-    # 1. İç Hırsızlık - Satış Fiyatı >= 100 ve Fark < 0 olan ürün sayısı
-    if 'Satış Fiyatı' in df.columns:
-        ic_hirsizlik = df[(df['Satış Fiyatı'] >= 100) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
-    else:
-        ic_hirsizlik = pd.Series(0, index=magazalar)
+    # 1. İç Hırsızlık - Fiyat >= 100 ve Fark < 0 olan ürün sayısı
+    price = _get_price_col(df)
+    ic_hirsizlik = df[(price >= 100) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
     
     # 2. Kronik Açık - Önceki Fark < 0 ve Fark < 0 olan ürün sayısı
     kronik = df[(df['Önceki Fark Miktarı'] < 0) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
