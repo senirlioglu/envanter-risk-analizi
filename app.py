@@ -283,9 +283,17 @@ def _ara_iptal_kaydi(malzeme_kodu, iptal_data, kamera_limit):
 
 
 # ==================== SUPABASE BAĞLANTISI ====================
-# Güvenlik: Credentials st.secrets'tan okunuyor
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://tlcgcdiycgfxpxwzkwuf.supabase.co")
+# Güvenlik: Credentials SADECE st.secrets'tan okunuyor
+# Streamlit Cloud'da Settings > Secrets'a ekle:
+# SUPABASE_URL = "https://xxx.supabase.co"
+# SUPABASE_KEY = "eyJxxx..."
+
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("⚠️ Supabase credentials eksik! Secrets'a SUPABASE_URL ve SUPABASE_KEY ekleyin.")
+    st.stop()
 
 @st.cache_resource
 def get_supabase_client():
@@ -299,14 +307,27 @@ def get_supabase_client():
 supabase: Client = get_supabase_client()
 
 # ==================== GİRİŞ SİSTEMİ ====================
-USERS = {
-    "ziya": "Gm2025!",
-    "sm1": "Sm12025!",
-    "sm2": "Sm22025!",
-    "sm3": "Sm32025!",
-    "sm4": "Sm42025!",
-    "sma": "Sma2025!",
-}
+# Kullanıcılar st.secrets'tan okunur (güvenlik için)
+# Streamlit Cloud'da Settings > Secrets'a ekle:
+# [users]
+# ziya = "Gm2025!"
+# sm1 = "Sm12025!"
+# sm2 = "Sm22025!"
+# sm3 = "Sm32025!"
+# sm4 = "Sm42025!"
+# sma = "Sma2025!"
+
+def get_users():
+    """Kullanıcıları st.secrets'tan al"""
+    try:
+        if "users" in st.secrets:
+            return dict(st.secrets["users"])
+    except:
+        pass
+    # Fallback - geliştirme ortamı için (production'da kaldır)
+    return {}
+
+USERS = get_users()
 
 def login():
     if "user" not in st.session_state:
