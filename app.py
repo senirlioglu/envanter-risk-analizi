@@ -125,8 +125,13 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     return result
 
 
-def enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi):
-    """İç hırsızlık tablosuna kamera kontrol bilgisi ekler"""
+def enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi, full_df=None):
+    """
+    İç hırsızlık tablosuna kamera kontrol bilgisi ekler
+    Eğer ürünün kendisi için iptal yoksa, aynı kategorideki 100+ TL ürünlerde iptal arar
+    
+    full_df: Tüm envanter verisi (kategori araması için gerekli)
+    """
     if internal_df.empty:
         return internal_df
     
@@ -150,81 +155,132 @@ def enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi)
     # Malzeme kodlarını al
     malzeme_kodlari = df['Malzeme Kodu'].astype(str).tolist()
     
-    # İptal verilerini çek
-    iptal_data = get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari)
+    # Kategori bilgisini al (Mal Grubu Tanımı)
+    kategori_col = None
+    for col in ['Mal Grubu Tanımı', 'Ürün Grubu', 'Ana Grup']:
+        if col in df.columns:
+            kategori_col = col
+            break
+    
+    # Kategorideki tüm 100+ TL ürünleri bul (alternatif arama için)
+    kategori_urunleri = {}
+    if kategori_col and full_df is not None:
+        for _, row in df.iterrows():
+            kategori = row.get(kategori_col, '')
+            if kategori and kategori not in kategori_urunleri:
+                # Bu kategorideki 100+ TL ürünleri bul
+                if kategori_col in full_df.columns and 'Satış Fiyatı' in full_df.columns:
+                    kat_mask = (full_df[kategori_col] == kategori) & (full_df['Satış Fiyatı'] >= 100)
+                    kat_urunler = full_df.loc[kat_mask, 'Malzeme Kodu'].astype(str).unique().tolist()
+                    kategori_urunleri[kategori] = kat_urunler
+    
+    # Tüm kategori ürünlerinin iptal verilerini çek
+    tum_kategori_kodlari = set()
+    for kodlar in kategori_urunleri.values():
+        tum_kategori_kodlari.update(kodlar)
+    
+    # İptal verilerini çek (hem direkt ürünler hem kategori ürünleri)
+    tum_kodlar = list(set(malzeme_kodlari) | tum_kategori_kodlari)
+    iptal_data = get_iptal_timestamps_for_magaza(magaza_kodu, tum_kodlar)
     
     # Yeni sütunlar
-    kamera_tarihleri = []
-    kamera_saatleri = []
-    kamera_durumu = []
-    islem_nolari = []
+    kamera_kontrol = []
     
     for _, row in df.iterrows():
         malzeme_kodu = str(row['Malzeme Kodu']).strip()
+        kategori = row.get(kategori_col, '') if kategori_col else ''
         
-        if malzeme_kodu in iptal_data:
-            iptaller = iptal_data[malzeme_kodu]
-            
-            son_15_gun = []
-            eski_iptaller = []
-            
-            for iptal in iptaller:
-                tarih_str = str(iptal['tarih'])
-                
-                try:
-                    for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y']:
-                        try:
-                            tarih = datetime.strptime(tarih_str.split()[0], fmt)
-                            break
-                        except:
-                            continue
-                    else:
-                        continue
-                    
-                    if tarih >= kamera_limit:
-                        son_15_gun.append({**iptal, 'tarih_dt': tarih})
-                    else:
-                        eski_iptaller.append({**iptal, 'tarih_dt': tarih})
-                except:
-                    pass
-            
-            if son_15_gun:
-                son_15_gun_sorted = sorted(son_15_gun, key=lambda x: x['tarih_dt'], reverse=True)
-                en_son = son_15_gun_sorted[0]
-                
-                kamera_tarihleri.append(en_son['tarih'])
-                kamera_saatleri.append(en_son['saat'])
-                islem_nolari.append(en_son['islem_no'])
-                
-                if len(son_15_gun) == 1:
-                    kamera_durumu.append("✅ KAMERAYA BAK")
-                else:
-                    kamera_durumu.append(f"✅ KAMERAYA BAK ({len(son_15_gun)} işlem)")
-            
-            elif eski_iptaller:
-                kamera_tarihleri.append('-')
-                kamera_saatleri.append('-')
-                islem_nolari.append('-')
-                kamera_durumu.append(f"⚠️ 15 gün öncesi ({len(eski_iptaller)} işlem)")
-            
-            else:
-                kamera_tarihleri.append('-')
-                kamera_saatleri.append('-')
-                islem_nolari.append('-')
-                kamera_durumu.append('❓ Tarih okunamadı')
+        # Önce direkt ürün için iptal ara
+        sonuc = _ara_iptal_kaydi(malzeme_kodu, iptal_data, kamera_limit)
         
+        if sonuc['bulundu']:
+            # Ürünün kendisi için kayıt var
+            kamera_kontrol.append(sonuc['detay'])
         else:
-            kamera_tarihleri.append('-')
-            kamera_saatleri.append('-')
-            islem_nolari.append('-')
-            kamera_durumu.append('❌ İptal kaydı yok')
+            # Ürün için kayıt yok, kategorideki diğer 100+ TL ürünlere bak
+            alternatif_bulundu = False
+            alternatif_detay = ""
+            
+            if kategori and kategori in kategori_urunleri:
+                for alt_kod in kategori_urunleri[kategori]:
+                    if alt_kod != malzeme_kodu:
+                        alt_sonuc = _ara_iptal_kaydi(alt_kod, iptal_data, kamera_limit)
+                        if alt_sonuc['bulundu']:
+                            alternatif_bulundu = True
+                            # Alternatif ürün adını bul
+                            alt_ad = ""
+                            if full_df is not None:
+                                alt_rows = full_df[full_df['Malzeme Kodu'].astype(str) == alt_kod]
+                                if len(alt_rows) > 0:
+                                    alt_ad = alt_rows['Malzeme Tanımı'].iloc[0] if 'Malzeme Tanımı' in alt_rows.columns else alt_kod
+                            
+                            alternatif_detay = f"🔄 KATEGORİ: {alt_ad[:30] if alt_ad else alt_kod} → {alt_sonuc['detay']}"
+                            break
+            
+            if alternatif_bulundu:
+                kamera_kontrol.append(alternatif_detay)
+            else:
+                # Ne ürün ne kategori için kayıt yok
+                kamera_kontrol.append(f"❌ {kategori} kategorisinde 100+ TL iptal yok" if kategori else "❌ İptal kaydı yok")
     
-    df['📅 Kamera Tarihi'] = kamera_tarihleri
-    df['⏰ Kamera Saati'] = kamera_saatleri
-    df['🔢 İşlem No'] = islem_nolari
-    df['📹 Kamera Durumu'] = kamera_durumu
+    df['KAMERA KONTROL DETAY'] = kamera_kontrol
     
     return df
+
+
+def _ara_iptal_kaydi(malzeme_kodu, iptal_data, kamera_limit):
+    """Bir ürün için iptal kaydı ara ve formatla"""
+    if malzeme_kodu not in iptal_data:
+        return {'bulundu': False, 'detay': ''}
+    
+    iptaller = iptal_data[malzeme_kodu]
+    son_15_gun = []
+    
+    for iptal in iptaller:
+        tarih_str = str(iptal['tarih'])
+        
+        try:
+            for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y']:
+                try:
+                    tarih = datetime.strptime(tarih_str.split()[0], fmt)
+                    break
+                except:
+                    continue
+            else:
+                continue
+            
+            if tarih >= kamera_limit:
+                son_15_gun.append({**iptal, 'tarih_dt': tarih})
+        except:
+            pass
+    
+    if not son_15_gun:
+        return {'bulundu': False, 'detay': ''}
+    
+    # Tarihe göre sırala ve formatla
+    son_15_gun_sorted = sorted(son_15_gun, key=lambda x: x['tarih_dt'], reverse=True)
+    
+    detaylar = []
+    for iptal in son_15_gun_sorted[:3]:  # En fazla 3 kayıt göster
+        tarih = iptal['tarih_dt'].strftime('%d.%m.%Y')
+        saat = str(iptal.get('saat', ''))[:8]
+        islem_no = str(iptal.get('islem_no', ''))
+        
+        # İşlem numarasından kasa numarasını çıkar (örn: 79150012711503250661 -> pozisyon 4-5)
+        kasa_no = ""
+        if len(islem_no) >= 6:
+            try:
+                kasa_no = f"Kasa:{int(islem_no[4:6])}"
+            except:
+                kasa_no = ""
+        
+        detaylar.append(f"{tarih} {saat} {kasa_no}".strip())
+    
+    return {
+        'bulundu': True,
+        'detay': "✅ KAMERA BAK " + " | ".join(detaylar)
+    }
+
 
 # ==================== SUPABASE BAĞLANTISI ====================
 # Güvenlik: Credentials st.secrets'tan okunuyor
@@ -548,10 +604,12 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
 
 
 @st.cache_data(ttl=900)  # 15 dakika cache
-def get_sm_summary_from_view(satis_muduru=None, donemler=None):
+def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=None, tarih_bitis=None):
     """
     SM Özet ekranı için Supabase VIEW'den veri çek
     PAGINATION YOK - Tek sorguda tüm mağaza özetleri gelir (~200-300 satır)
+    
+    tarih_baslangic, tarih_bitis: Envanter tarihi aralığı filtresi (opsiyonel)
     """
     try:
         query = supabase.table('v_magaza_ozet').select('*')
@@ -561,6 +619,12 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None):
         
         if donemler and len(donemler) > 0:
             query = query.in_('envanter_donemi', donemler)
+        
+        # Tarih aralığı filtresi
+        if tarih_baslangic:
+            query = query.gte('envanter_tarihi', tarih_baslangic.strftime('%Y-%m-%d'))
+        if tarih_bitis:
+            query = query.lte('envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
         
         result = query.execute()
         
@@ -828,6 +892,30 @@ def get_available_sms_cached():
         if result.data:
             sms = list(set([r['satis_muduru'] for r in result.data if r.get('satis_muduru')]))
             return sorted(sms)
+    except:
+        pass
+    return []
+
+def get_envanter_tarihleri_by_donem(donemler):
+    """Seçilen dönemlerdeki envanter tarihlerini getir"""
+    try:
+        if not donemler:
+            return []
+        query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
+        result = query.execute()
+        if result.data:
+            tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
+            # Tarihleri datetime'a çevir ve sırala
+            tarih_dates = []
+            for t in tarihler:
+                try:
+                    if isinstance(t, str):
+                        tarih_dates.append(pd.to_datetime(t).date())
+                    else:
+                        tarih_dates.append(t)
+                except:
+                    pass
+            return sorted(tarih_dates)
     except:
         pass
     return []
@@ -1557,6 +1645,65 @@ def generate_executive_summary(df, kasa_activity_df=None, kasa_summary=None):
     return comments, group_stats
 
 
+def compute_sigara_acik_by_store(df: pd.DataFrame) -> pd.Series:
+    """
+    Sigara açığını mağaza bazında vektörel hesapla (10x hızlı)
+    Loop yerine tek seferde tüm mağazalar için hesaplama yapar
+    """
+    # Sigara kontrol kolonları
+    cols = [c for c in ['Mal Grubu Tanımı', 'Ürün Grubu', 'Ana Grup'] if c in df.columns]
+    if not cols:
+        return pd.Series(dtype=float)
+    
+    def norm_turkish(s: pd.Series) -> pd.Series:
+        """Türkçe karakterleri normalize et"""
+        s = s.fillna('').astype(str).str.upper()
+        return (s.str.replace('İ', 'I', regex=False)
+                 .str.replace('Ş', 'S', regex=False)
+                 .str.replace('Ğ', 'G', regex=False)
+                 .str.replace('Ü', 'U', regex=False)
+                 .str.replace('Ö', 'O', regex=False)
+                 .str.replace('Ç', 'C', regex=False)
+                 .str.replace('ı', 'I', regex=False))
+    
+    # Sigara mask oluştur
+    masks = []
+    for c in cols:
+        v = norm_turkish(df[c])
+        masks.append(v.str.contains(r'SIGARA|TUTUN', regex=True, na=False))
+    
+    sig_mask = masks[0]
+    for m in masks[1:]:
+        sig_mask = sig_mask | m
+    
+    # Sigara ürünlerini filtrele
+    required_cols = ['Mağaza Kodu', 'Fark Miktarı', 'Kısmi Envanter Miktarı', 'Önceki Fark Miktarı']
+    available_cols = [c for c in required_cols if c in df.columns]
+    
+    if 'Mağaza Kodu' not in available_cols:
+        return pd.Series(dtype=float)
+    
+    sig_df = df.loc[sig_mask, available_cols].copy()
+    
+    if sig_df.empty:
+        return pd.Series(dtype=float)
+    
+    # Net değeri hesapla
+    sig_df['net'] = sig_df.get('Fark Miktarı', pd.Series(0)).fillna(0)
+    if 'Kısmi Envanter Miktarı' in sig_df.columns:
+        sig_df['net'] += sig_df['Kısmi Envanter Miktarı'].fillna(0)
+    if 'Önceki Fark Miktarı' in sig_df.columns:
+        sig_df['net'] += sig_df['Önceki Fark Miktarı'].fillna(0)
+    
+    # Mağaza bazında topla
+    net_by_store = sig_df.groupby('Mağaza Kodu')['net'].sum()
+    
+    # Net negatifse açık var → pozitif "açık adedi" olarak döndür
+    sigara_acik = (-net_by_store).clip(lower=0)
+    
+    return sigara_acik
+
+
 def analyze_region(df, kasa_kodlari):
     """Bölge geneli analiz - HIZLI VERSİYON (vektörel işlemler)"""
     
@@ -1622,24 +1769,8 @@ def analyze_region(df, kasa_kodlari):
     else:
         kronik_fire = pd.Series(0, index=magazalar)
     
-    # 4. Sigara Açığı - TEK KAYNAK: detect_cigarette_shortage fonksiyonu
-    # Her mağaza için detect_cigarette_shortage çağır ve net toplamı al
-    sigara_acik_dict = {}
-    for mag in magazalar:
-        mag_df = df[df['Mağaza Kodu'] == mag]
-        cig_result = detect_cigarette_shortage(mag_df)
-        if len(cig_result) > 0:
-            # Son satır TOPLAM satırı, oradan net değeri al
-            toplam_row = cig_result[cig_result['Malzeme Kodu'] == '*** TOPLAM ***']
-            if len(toplam_row) > 0:
-                net_val = toplam_row['Ürün Toplam'].values[0]
-                sigara_acik_dict[mag] = abs(net_val) if net_val < 0 else 0
-            else:
-                sigara_acik_dict[mag] = 0
-        else:
-            sigara_acik_dict[mag] = 0
-    
-    sigara_fark = pd.DataFrame.from_dict(sigara_acik_dict, orient='index', columns=['Sigara Açık'])
+    # 4. Sigara Açığı - VEKTÖREL HESAPLAMA (10x hızlı)
+    sigara_acik_series = compute_sigara_acik_by_store(df)
     
     # 5. Fire Manipülasyonu - Fire > |Fark| olan ürün sayısı
     fire_manip = df[abs(df['Fire Miktarı']) > abs(df['Fark Miktarı'].fillna(0) + df['Kısmi Envanter Miktarı'].fillna(0))].groupby('Mağaza Kodu').size()
@@ -1677,7 +1808,7 @@ def analyze_region(df, kasa_kodlari):
         ic_hrs = ic_hirsizlik.get(mag, 0)
         kr_acik = kronik.get(mag, 0)
         kr_fire = kronik_fire.get(mag, 0)
-        sig_acik = sigara_fark.loc[mag, 'Sigara Açık'] if mag in sigara_fark.index else 0
+        sig_acik = sigara_acik_series.get(mag, 0)
         fire_man = fire_manip.get(mag, 0)
         kasa_adet = kasa_agg.loc[mag, '10TL Adet'] if mag in kasa_agg.index else 0
         kasa_tutar = kasa_agg.loc[mag, '10TL Tutar'] if mag in kasa_agg.index else 0
@@ -2588,9 +2719,51 @@ if analysis_mode == "👔 SM Özet":
         else:
             selected_periods = []
     
+    # Tarih aralığı filtresi (opsiyonel)
+    tarih_baslangic = None
+    tarih_bitis = None
+    
+    if selected_periods:
+        # Seçilen dönemlerdeki envanter tarihlerini getir
+        donem_tarihleri = get_envanter_tarihleri_by_donem(selected_periods)
+        
+        if donem_tarihleri and len(donem_tarihleri) > 1:
+            with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    min_tarih = min(donem_tarihleri)
+                    max_tarih = max(donem_tarihleri)
+                    tarih_baslangic = st.date_input(
+                        "Başlangıç Tarihi", 
+                        value=min_tarih,
+                        min_value=min_tarih,
+                        max_value=max_tarih,
+                        key="sm_tarih_bas"
+                    )
+                with col_t2:
+                    tarih_bitis = st.date_input(
+                        "Bitiş Tarihi", 
+                        value=max_tarih,
+                        min_value=min_tarih,
+                        max_value=max_tarih,
+                        key="sm_tarih_bit"
+                    )
+                
+                # Eğer varsayılan değerler seçiliyse filtre uygulanmasın
+                if tarih_baslangic == min_tarih and tarih_bitis == max_tarih:
+                    tarih_baslangic = None
+                    tarih_bitis = None
+                else:
+                    st.info(f"📆 Filtre: {tarih_baslangic.strftime('%d.%m.%Y')} - {tarih_bitis.strftime('%d.%m.%Y')}")
+    
     if selected_sm_option and selected_periods:
         # ⚡ SÜPER HIZLI - Supabase VIEW'den direkt özet veri
-        region_df = get_sm_summary_from_view(satis_muduru=selected_sm, donemler=selected_periods)
+        region_df = get_sm_summary_from_view(
+            satis_muduru=selected_sm, 
+            donemler=selected_periods,
+            tarih_baslangic=tarih_baslangic,
+            tarih_bitis=tarih_bitis
+        )
         
         if len(region_df) == 0:
             st.warning("Seçilen kriterlere uygun veri bulunamadı")
@@ -2757,11 +2930,11 @@ if analysis_mode == "👔 SM Özet":
                                 # Analizleri yap
                                 int_df = detect_internal_theft(df_mag)
                                 
-                                # Kamera timestamp entegrasyonu
+                                # Kamera timestamp entegrasyonu (kategori araması için full_df geçir)
                                 if len(int_df) > 0:
                                     try:
                                         env_tarihi = df_mag['Envanter Tarihi'].iloc[0]
-                                        int_df = enrich_internal_theft_with_camera(int_df, selected_mag_kod, env_tarihi)
+                                        int_df = enrich_internal_theft_with_camera(int_df, selected_mag_kod, env_tarihi, full_df=df_mag)
                                     except:
                                         pass
                                 
@@ -2892,9 +3065,51 @@ elif analysis_mode == "🌍 GM Özet":
         selected_periods = []
         st.warning("Henüz veri yüklenmemiş. SM'ler Excel yükledikçe veriler burada görünecek.")
     
+    # Tarih aralığı filtresi (opsiyonel)
+    gm_tarih_baslangic = None
+    gm_tarih_bitis = None
+    
+    if selected_periods:
+        # Seçilen dönemlerdeki envanter tarihlerini getir
+        donem_tarihleri = get_envanter_tarihleri_by_donem(selected_periods)
+        
+        if donem_tarihleri and len(donem_tarihleri) > 1:
+            with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    min_tarih = min(donem_tarihleri)
+                    max_tarih = max(donem_tarihleri)
+                    gm_tarih_baslangic = st.date_input(
+                        "Başlangıç Tarihi", 
+                        value=min_tarih,
+                        min_value=min_tarih,
+                        max_value=max_tarih,
+                        key="gm_tarih_bas"
+                    )
+                with col_t2:
+                    gm_tarih_bitis = st.date_input(
+                        "Bitiş Tarihi", 
+                        value=max_tarih,
+                        min_value=min_tarih,
+                        max_value=max_tarih,
+                        key="gm_tarih_bit"
+                    )
+                
+                # Eğer varsayılan değerler seçiliyse filtre uygulanmasın
+                if gm_tarih_baslangic == min_tarih and gm_tarih_bitis == max_tarih:
+                    gm_tarih_baslangic = None
+                    gm_tarih_bitis = None
+                else:
+                    st.info(f"📆 Filtre: {gm_tarih_baslangic.strftime('%d.%m.%Y')} - {gm_tarih_bitis.strftime('%d.%m.%Y')}")
+    
     if selected_periods:
         # ⚡ SÜPER HIZLI - Supabase VIEW'den direkt özet veri (TÜM SM'ler)
-        region_df = get_sm_summary_from_view(satis_muduru=None, donemler=selected_periods)
+        region_df = get_sm_summary_from_view(
+            satis_muduru=None, 
+            donemler=selected_periods,
+            tarih_baslangic=gm_tarih_baslangic,
+            tarih_bitis=gm_tarih_bitis
+        )
         
         if len(region_df) == 0:
             st.warning("Seçilen döneme ait veri bulunamadı")
@@ -3165,6 +3380,44 @@ elif uploaded_file is not None:
         
         # ========== BÖLGE ÖZETİ MODU ==========
         if analysis_mode == "🌍 Bölge Özeti":
+            # Tarih aralığı filtresi (opsiyonel)
+            if 'Envanter Tarihi' in df.columns:
+                try:
+                    df['Envanter Tarihi'] = pd.to_datetime(df['Envanter Tarihi'])
+                    envanter_tarihleri = df['Envanter Tarihi'].dropna().dt.date.unique()
+                    envanter_tarihleri = sorted(envanter_tarihleri)
+                    
+                    if len(envanter_tarihleri) > 1:
+                        with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
+                            col_t1, col_t2 = st.columns(2)
+                            with col_t1:
+                                min_tarih = min(envanter_tarihleri)
+                                max_tarih = max(envanter_tarihleri)
+                                bolge_tarih_bas = st.date_input(
+                                    "Başlangıç Tarihi", 
+                                    value=min_tarih,
+                                    min_value=min_tarih,
+                                    max_value=max_tarih,
+                                    key="bolge_tarih_bas"
+                                )
+                            with col_t2:
+                                bolge_tarih_bit = st.date_input(
+                                    "Bitiş Tarihi", 
+                                    value=max_tarih,
+                                    min_value=min_tarih,
+                                    max_value=max_tarih,
+                                    key="bolge_tarih_bit"
+                                )
+                            
+                            # Tarih filtresi uygula
+                            if bolge_tarih_bas != min_tarih or bolge_tarih_bit != max_tarih:
+                                df = df[(df['Envanter Tarihi'].dt.date >= bolge_tarih_bas) & 
+                                       (df['Envanter Tarihi'].dt.date <= bolge_tarih_bit)]
+                                magazalar = df['Mağaza Kodu'].dropna().unique().tolist()
+                                st.info(f"📆 Filtre: {bolge_tarih_bas.strftime('%d.%m.%Y')} - {bolge_tarih_bit.strftime('%d.%m.%Y')} | {len(magazalar)} mağaza")
+                except:
+                    pass
+            
             st.subheader(f"🌍 Bölge Özeti - {len(magazalar)} Mağaza")
             
             with st.spinner("Tüm mağazalar analiz ediliyor..."):
@@ -3266,11 +3519,11 @@ elif uploaded_file is not None:
                         # Analizleri yap
                         int_df = detect_internal_theft(df_mag)
                         
-                        # Kamera timestamp entegrasyonu
+                        # Kamera timestamp entegrasyonu (kategori araması için full_df geçir)
                         if len(int_df) > 0:
                             try:
                                 env_tarihi = df_mag['Envanter Tarihi'].iloc[0]
-                                int_df = enrich_internal_theft_with_camera(int_df, mag_kod, env_tarihi)
+                                int_df = enrich_internal_theft_with_camera(int_df, mag_kod, env_tarihi, full_df=df_mag)
                             except:
                                 pass
                         
@@ -3430,7 +3683,7 @@ elif uploaded_file is not None:
                         mag_count = len(df_sheets_test[df_sheets_test[mag_col] == str(magaza_kodu)])
                         st.write(f"🏪 Mağaza {magaza_kodu} iptal sayısı: {mag_count}")
                     
-                    internal_df = enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi)
+                    internal_df = enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi, full_df=df_display)
                     st.success(f"✅ Kamera entegrasyonu tamamlandı")
                 except Exception as e:
                     st.error(f"❌ Kamera entegrasyonu hatası: {e}")
@@ -3632,11 +3885,11 @@ elif uploaded_file is not None:
                                 
                                     int_df = detect_internal_theft(df_mag)
                                     
-                                    # Kamera timestamp entegrasyonu
+                                    # Kamera timestamp entegrasyonu (kategori araması için full_df geçir)
                                     if len(int_df) > 0:
                                         try:
                                             env_tarihi = df_mag['Envanter Tarihi'].iloc[0]
-                                            int_df = enrich_internal_theft_with_camera(int_df, mag, env_tarihi)
+                                            int_df = enrich_internal_theft_with_camera(int_df, mag, env_tarihi, full_df=df_mag)
                                         except:
                                             pass
                                     
