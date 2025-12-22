@@ -96,16 +96,18 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         return {}
     
     # Mağaza filtrele
-    df_iptal[col_mapping['magaza']] = df_iptal[col_mapping['magaza']].astype(str).str.strip()
-    df_mag = df_iptal[df_iptal[col_mapping['magaza']] == str(magaza_kodu).strip()]
+    # .0 sonekini temizle (Excel float formatı)
+    df_iptal[col_mapping['magaza']] = df_iptal[col_mapping['magaza']].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    df_mag = df_iptal[df_iptal[col_mapping['magaza']] == str(magaza_kodu).strip().replace('.0', '')]
     
     if df_mag.empty:
         return {}
     
     # Malzeme kodlarıyla eşleştir
     df_mag = df_mag.copy()
-    df_mag[col_mapping['malzeme']] = df_mag[col_mapping['malzeme']].astype(str).str.strip()
-    malzeme_set = set(str(m).strip() for m in malzeme_kodlari)
+    # .0 sonekini temizle (Excel float formatı)
+    df_mag[col_mapping['malzeme']] = df_mag[col_mapping['malzeme']].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    malzeme_set = set(str(m).strip().replace('.0', '') for m in malzeme_kodlari)
     
     result = {}
     
