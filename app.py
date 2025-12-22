@@ -722,16 +722,14 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=900)  # 15 dakika cache
+@st.cache_data(ttl=300)  # 5 dakika cache
 def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=None, tarih_bitis=None):
     """
-    SM Özet ekranı için Supabase VIEW'den veri çek
-    PAGINATION YOK - Tek sorguda tüm mağaza özetleri gelir (~200-300 satır)
-    
-    tarih_baslangic, tarih_bitis: Envanter tarihi aralığı filtresi (opsiyonel)
+    SM/GM Özet ekranı için Supabase MATERIALIZED VIEW'den veri çek
+    mv_magaza_ozet kullanır - önceden hesaplanmış, çok hızlı
     """
     try:
-        query = supabase.table('v_magaza_ozet').select('*')
+        query = supabase.table('mv_magaza_ozet').select('*')
         
         if satis_muduru:
             query = query.eq('satis_muduru', satis_muduru)
@@ -739,11 +737,12 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         if donemler and len(donemler) > 0:
             query = query.in_('envanter_donemi', donemler)
         
-        # Tarih aralığı filtresi
+        # Tarih aralığı filtresi - DOĞRU MANTIK
+        # "aralıkla çakışan mağazaları getir"
         if tarih_baslangic:
-            query = query.gte('envanter_tarihi', tarih_baslangic.strftime('%Y-%m-%d'))
+            query = query.gte('max_envanter_tarihi', tarih_baslangic.strftime('%Y-%m-%d'))
         if tarih_bitis:
-            query = query.lte('envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
+            query = query.lte('min_envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
         
         result = query.execute()
         
@@ -759,7 +758,8 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
             'satis_muduru': 'Satış Müdürü',
             'bolge_sorumlusu': 'Bölge Sorumlusu',
             'envanter_donemi': 'Envanter Dönemi',
-            'envanter_tarihi': 'Envanter Tarihi',
+            'min_envanter_tarihi': 'Envanter Tarihi',
+            'max_envanter_tarihi': 'Envanter Tarihi Son',
             'envanter_baslangic_tarihi': 'Envanter Başlangıç Tarihi',
             'fark_tutari': 'Fark Tutarı',
             'kismi_tutari': 'Kısmi Tutarı',
@@ -791,7 +791,7 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         try:
             df['Gün'] = (pd.to_datetime(df['Envanter Tarihi']) - 
                         pd.to_datetime(df['Envanter Başlangıç Tarihi'])).dt.days
-            df['Gün'] = df['Gün'].apply(lambda x: max(1, x) if pd.notna(x) else 1)
+            df['Gün'] = df['Gün'].apply(lambda x: max(1, abs(x)) if pd.notna(x) else 1)
         except:
             df['Gün'] = 1
         
@@ -801,7 +801,7 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         # Sigara açığı (negatifse açık var)
         df['Sigara'] = df['Sigara Net'].apply(lambda x: abs(x) if x < 0 else 0)
         
-        # Bölge ortalamalarını hesapla (VIEW'den)
+        # Bölge ortalamalarını hesapla
         bolge_ort = {
             'kayip_oran': df['Toplam %'].mean() if len(df) > 0 else 1,
             'ic_hirsizlik': df['İç Hırs.'].mean() if len(df) > 0 else 10,
@@ -809,81 +809,70 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
             'sigara': df['Sigara'].mean() if len(df) > 0 else 0,
         }
         
-        # Risk puanı hesapla (tam formül)
+        # Risk puanı hesapla
         def calc_risk_score(row):
-            """
-            Risk puanı hesaplama (0-100)
-            Ağırlıklar:
-            - Kayıp Oranı: %30 (bölge ortalamasına göre)
-            - Sigara Açığı: %30
-            - İç Hırsızlık: %30 (bölge ortalamasına göre)
-            - Kronik Açık: %5
-            - 10TL Ürünleri: %5
-            """
-            puan = 0
+            score = 0
+            reasons = []
             
-            # Kayıp Oranı (30 puan) - Bölge ortalamasına göre
-            kayip_oran = row.get('Toplam %', 0)
-            if bolge_ort['kayip_oran'] > 0:
-                kayip_ratio = kayip_oran / bolge_ort['kayip_oran']
-                kayip_puan = min(30, kayip_ratio * 15)
-            else:
-                kayip_puan = min(30, kayip_oran * 20)
-            puan += kayip_puan
+            # 1. Kayıp oranı
+            kayip = row['Toplam %']
+            if kayip > 2.0:
+                score += 40
+                reasons.append(f"Kayıp %{kayip:.1f}")
+            elif kayip > 1.5:
+                score += 25
+                reasons.append(f"Kayıp %{kayip:.1f}")
+            elif kayip > 1.0:
+                score += 15
             
-            # Sigara Açığı (30 puan) - Her sigara kritik
-            sigara_count = row.get('Sigara', 0)
-            if sigara_count > 10:
-                sigara_puan = 30
-            elif sigara_count > 5:
-                sigara_puan = 25
-            elif sigara_count > 0:
-                sigara_puan = sigara_count * 4
-            else:
-                sigara_puan = 0
-            puan += sigara_puan
+            # 2. İç hırsızlık
+            ic = row['İç Hırs.']
+            if ic > 50:
+                score += 30
+                reasons.append(f"İç Hırs. {ic:.0f}")
+            elif ic > 30:
+                score += 20
+            elif ic > 15:
+                score += 10
             
-            # İç Hırsızlık (30 puan) - Bölge ortalamasına göre
-            ic_hirsizlik_count = row.get('İç Hırs.', 0)
-            if bolge_ort['ic_hirsizlik'] > 0:
-                ic_ratio = ic_hirsizlik_count / bolge_ort['ic_hirsizlik']
-                ic_puan = min(30, ic_ratio * 15)
-            else:
-                ic_puan = min(30, ic_hirsizlik_count * 0.5)
-            puan += ic_puan
+            # 3. Sigara
+            sig = row['Sigara']
+            if sig > 5:
+                score += 35
+                reasons.append(f"Sigara {sig:.0f}")
+            elif sig > 0:
+                score += 20
+                reasons.append(f"Sigara {sig:.0f}")
             
-            # Kronik Açık (5 puan)
-            kronik_count = row.get('Kronik', 0)
-            if bolge_ort['kronik'] > 0:
-                kronik_ratio = kronik_count / bolge_ort['kronik']
-                kronik_puan = min(5, kronik_ratio * 2.5)
-            else:
-                kronik_puan = min(5, kronik_count * 0.05)
-            puan += kronik_puan
+            # 4. Kronik
+            kr = row['Kronik']
+            if kr > 100:
+                score += 15
+                reasons.append(f"Kronik {kr:.0f}")
+            elif kr > 50:
+                score += 10
             
-            # 10TL Ürünleri (5 puan) - Fazla = şüpheli
-            kasa_adet = abs(row.get('Kasa Adet', 0))
-            if kasa_adet > 20:
-                kasa_puan = 5
-            elif kasa_adet > 10:
-                kasa_puan = 3
-            elif kasa_adet > 0:
-                kasa_puan = 1
-            else:
-                kasa_puan = 0
-            puan += kasa_puan
+            # 5. Kasa aktivitesi (10TL ürünler)
+            kasa = abs(row.get('Kasa Tutar', 0) or 0)
+            if kasa > 5000:
+                score += 20
+                reasons.append(f"Kasa {kasa:,.0f}")
+            elif kasa > 2000:
+                score += 10
             
-            return min(100, max(0, puan))
+            return score, ', '.join(reasons) if reasons else '-'
         
-        df['Risk Puan'] = df.apply(calc_risk_score, axis=1)
+        df[['Risk Puan', 'Risk Nedenleri']] = df.apply(
+            lambda row: pd.Series(calc_risk_score(row)), axis=1
+        )
         
-        # Risk seviyesi (puana göre)
-        def get_risk_level(puan):
-            if puan >= 60:
+        # Risk seviyesi
+        def get_risk_level(score):
+            if score >= 70:
                 return '🔴 KRİTİK'
-            elif puan >= 40:
+            elif score >= 50:
                 return '🟠 RİSKLİ'
-            elif puan >= 20:
+            elif score >= 30:
                 return '🟡 DİKKAT'
             else:
                 return '🟢 TEMİZ'
@@ -896,13 +885,8 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         return df
         
     except Exception as e:
-        st.error(f"VIEW hatası: {str(e)}")
+        st.error(f"VIEW hatası: {e}")
         return pd.DataFrame()
-
-
-# ⚠️ SİLİNDİ: get_store_summary_fast
-# Artık VIEW kullanılıyor: get_sm_summary_from_view()
-# Bu fonksiyon performans katiliydi - mağaza mağaza loop yapıyordu
 
 
 # ==================== ANA UYGULAMA ====================
