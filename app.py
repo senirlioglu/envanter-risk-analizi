@@ -62,34 +62,29 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         return {}
     
     # Sütun isimlerini bul (STS_BW_10 formatına göre)
+    # NOT: Google Sheets CSV export'unda Türkçe karakterler bozulabiliyor
     col_mapping = {}
     for col in df_iptal.columns:
         col_lower = col.lower()
-        # Mağaza kodu
-        if 'mağaza' in col_lower and 'anahtar' in col_lower:
-            col_mapping['magaza'] = col
-        elif 'mağaza' in col_lower and 'kod' in col_lower:
-            col_mapping['magaza'] = col
-        # Malzeme kodu
-        elif 'malzeme' in col_lower and 'anahtar' in col_lower:
+        
+        # Mağaza kodu - "Mağaza - Anahtar" veya bozuk "MaÄŸaza - Anahtar"
+        if 'anahtar' in col_lower and ('mağaza' in col_lower or ('ma' in col_lower and 'aza' in col_lower)):
+            if 'malzeme' not in col_lower:
+                col_mapping['magaza'] = col
+        # Malzeme kodu - "Malzeme - Anahtar"
+        elif 'anahtar' in col_lower and 'malzeme' in col_lower:
             col_mapping['malzeme'] = col
-        elif 'malzeme' in col_lower and 'kod' not in col_lower and 'metin' not in col_lower and 'ölçü' not in col_lower:
-            if 'malzeme' not in col_mapping:
-                col_mapping['malzeme'] = col
         # Tarih
         elif col_lower == 'tarih' or col_lower == 'tarih - anahtar':
             col_mapping['tarih'] = col
-        # Saat
-        elif 'fiş saati' in col_lower or col_lower == 'fiş saati - anahtar':
+        # Saat - "Fiş Saati" veya bozuk "FiÅŸ Saati"
+        elif 'saati' in col_lower and 'anahtar' not in col_lower:
             col_mapping['saat'] = col
-        elif 'saat' in col_lower and 'anahtar' not in col_lower:
-            if 'saat' not in col_mapping:
-                col_mapping['saat'] = col
         # Miktar
         elif col_lower == 'miktar':
             col_mapping['miktar'] = col
-        # İşlem numarası
-        elif 'işlem numarası' in col_lower and 'anahtar' not in col_lower:
+        # İşlem numarası - "İşlem Numarası" veya bozuk versiyonu
+        elif 'numaras' in col_lower and 'anahtar' not in col_lower:
             col_mapping['islem_no'] = col
     
     if 'magaza' not in col_mapping or 'malzeme' not in col_mapping:
