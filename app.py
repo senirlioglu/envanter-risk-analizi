@@ -84,6 +84,7 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     col_saat = 'Fiş Saati'
     col_miktar = 'Miktar'
     col_islem_no = 'İşlem Numarası'
+    col_kasa = 'Kasa numarası'  # YENİ - Direkt kasa numarası kolonu
     
     # Sütunlar yoksa index ile dene
     cols = df_iptal.columns.tolist()
@@ -97,6 +98,9 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         col_saat = cols[31]
     if col_islem_no not in cols and len(cols) > 36:
         col_islem_no = cols[36]
+    # Kasa numarası kolonu - index 20
+    if col_kasa not in cols and len(cols) > 20:
+        col_kasa = cols[20]
     
     # Mağaza ve Malzeme kodlarını temizle
     def clean_code(x):
@@ -127,6 +131,7 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         saat = row.get(col_saat, '')
         miktar = row.get(col_miktar, 0)
         islem_no = row.get(col_islem_no, '')
+        kasa_no = row.get(col_kasa, '')  # YENİ - Direkt kasa numarası
         
         if malzeme not in result:
             result[malzeme] = []
@@ -135,7 +140,8 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
             'tarih': tarih,
             'saat': saat,
             'miktar': miktar,
-            'islem_no': islem_no
+            'islem_no': islem_no,
+            'kasa_no': kasa_no  # YENİ
         })
     
     return result
@@ -281,17 +287,17 @@ def _ara_iptal_kaydi(malzeme_kodu, iptal_data, kamera_limit):
     for iptal in son_15_gun_sorted[:3]:  # En fazla 3 kayıt göster
         tarih = iptal['tarih_dt'].strftime('%d.%m.%Y')
         saat = str(iptal.get('saat', ''))[:8]
-        islem_no = str(iptal.get('islem_no', ''))
         
-        # İşlem numarasından kasa numarasını çıkar (örn: 79150012711503250661 -> pozisyon 4-5)
-        kasa_no = ""
-        if len(islem_no) >= 6:
-            try:
-                kasa_no = f"Kasa:{int(islem_no[4:6])}"
-            except:
-                kasa_no = ""
+        # Direkt kasa numarası kolonundan al
+        kasa_no = str(iptal.get('kasa_no', '')).strip()
+        if kasa_no and kasa_no != 'nan' and kasa_no != '':
+            # Kasa numarasını temizle (float'tan gelen .0'ı kaldır)
+            kasa_no = kasa_no.replace('.0', '')
+            kasa_str = f"K{kasa_no}"
+        else:
+            kasa_str = ""
         
-        detaylar.append(f"{tarih} {saat} {kasa_no}".strip())
+        detaylar.append(f"{tarih} {saat} {kasa_str}".strip())
     
     return {
         'bulundu': True,
