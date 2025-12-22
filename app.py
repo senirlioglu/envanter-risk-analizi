@@ -289,7 +289,12 @@ SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 @st.cache_resource
 def get_supabase_client():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    from supabase import ClientOptions
+    # Timeout'u 60 saniyeye çıkar (default 5 saniye)
+    options = ClientOptions(
+        postgrest_client_timeout=60,
+    )
+    return create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 
 supabase: Client = get_supabase_client()
 
