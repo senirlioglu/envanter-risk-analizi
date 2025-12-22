@@ -5,7 +5,7 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from datetime import datetime
+from datetime import datetime, timedelta
 import zipfile
 import json
 import os
@@ -37,6 +37,188 @@ def load_risk_weights():
         }
 
 RISK_CONFIG = load_risk_weights()
+
+# ==================== GOOGLE SHEETS İPTAL VERİSİ (KAMERA ENTEGRASYONU) ====================
+IPTAL_SHEETS_ID = '1F4Th-xZ2n0jDyayy5vayIN2j-EGUzqw5Akd8mXQVh4o'
+IPTAL_SHEET_NAME = 'IptalVerisi'
+
+@st.cache_data(ttl=300)  # 5 dakika cache
+def get_iptal_verisi_from_sheets():
+    """Google Sheets'ten iptal verisini çeker (public sheet gerekli)"""
+    try:
+        csv_url = f'https://docs.google.com/spreadsheets/d/{IPTAL_SHEETS_ID}/gviz/tq?tqx=out:csv&sheet={IPTAL_SHEET_NAME}'
+        df = pd.read_csv(csv_url)
+        df.columns = df.columns.str.strip()
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+
+def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
+    """Belirli mağaza ve ürünler için iptal timestamp bilgilerini döner"""
+    df_iptal = get_iptal_verisi_from_sheets()
+    
+    if df_iptal.empty:
+        return {}
+    
+    # Sütun isimlerini bul
+    col_mapping = {}
+    for col in df_iptal.columns:
+        col_lower = col.lower()
+        if 'mağaza' in col_lower and 'kod' in col_lower:
+            col_mapping['magaza'] = col
+        elif 'malzeme' in col_lower or 'ürün kodu' in col_lower:
+            col_mapping['malzeme'] = col
+        elif col_lower == 'tarih':
+            col_mapping['tarih'] = col
+        elif 'saat' in col_lower or 'zaman' in col_lower:
+            col_mapping['saat'] = col
+        elif 'miktar' in col_lower and 'tutar' not in col_lower:
+            col_mapping['miktar'] = col
+        elif 'işlem' in col_lower and ('no' in col_lower or 'numarası' in col_lower):
+            col_mapping['islem_no'] = col
+    
+    if 'magaza' not in col_mapping or 'malzeme' not in col_mapping:
+        return {}
+    
+    # Mağaza filtrele
+    df_iptal[col_mapping['magaza']] = df_iptal[col_mapping['magaza']].astype(str).str.strip()
+    df_mag = df_iptal[df_iptal[col_mapping['magaza']] == str(magaza_kodu).strip()]
+    
+    if df_mag.empty:
+        return {}
+    
+    # Malzeme kodlarıyla eşleştir
+    df_mag = df_mag.copy()
+    df_mag[col_mapping['malzeme']] = df_mag[col_mapping['malzeme']].astype(str).str.strip()
+    malzeme_set = set(str(m).strip() for m in malzeme_kodlari)
+    
+    result = {}
+    
+    for _, row in df_mag.iterrows():
+        malzeme = str(row[col_mapping['malzeme']]).strip()
+        
+        if malzeme not in malzeme_set:
+            continue
+        
+        tarih = row.get(col_mapping.get('tarih', 'Tarih'), '')
+        saat = row.get(col_mapping.get('saat', 'Saat'), '')
+        miktar = row.get(col_mapping.get('miktar', 'Miktar'), 0)
+        islem_no = row.get(col_mapping.get('islem_no', 'İşlem No'), '')
+        
+        if malzeme not in result:
+            result[malzeme] = []
+        
+        result[malzeme].append({
+            'tarih': tarih,
+            'saat': saat,
+            'miktar': miktar,
+            'islem_no': islem_no
+        })
+    
+    return result
+
+
+def enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi):
+    """İç hırsızlık tablosuna kamera kontrol bilgisi ekler"""
+    if internal_df.empty:
+        return internal_df
+    
+    df = internal_df.copy()
+    
+    # Envanter tarihini datetime'a çevir
+    if isinstance(envanter_tarihi, str):
+        try:
+            envanter_tarihi = datetime.strptime(envanter_tarihi, '%Y-%m-%d')
+        except:
+            try:
+                envanter_tarihi = datetime.strptime(envanter_tarihi, '%d.%m.%Y')
+            except:
+                envanter_tarihi = datetime.now()
+    elif hasattr(envanter_tarihi, 'to_pydatetime'):
+        envanter_tarihi = envanter_tarihi.to_pydatetime()
+    
+    # 15 gün öncesi (kamera erişim limiti)
+    kamera_limit = envanter_tarihi - timedelta(days=15)
+    
+    # Malzeme kodlarını al
+    malzeme_kodlari = df['Malzeme Kodu'].astype(str).tolist()
+    
+    # İptal verilerini çek
+    iptal_data = get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari)
+    
+    # Yeni sütunlar
+    kamera_tarihleri = []
+    kamera_saatleri = []
+    kamera_durumu = []
+    islem_nolari = []
+    
+    for _, row in df.iterrows():
+        malzeme_kodu = str(row['Malzeme Kodu']).strip()
+        
+        if malzeme_kodu in iptal_data:
+            iptaller = iptal_data[malzeme_kodu]
+            
+            son_15_gun = []
+            eski_iptaller = []
+            
+            for iptal in iptaller:
+                tarih_str = str(iptal['tarih'])
+                
+                try:
+                    for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y']:
+                        try:
+                            tarih = datetime.strptime(tarih_str.split()[0], fmt)
+                            break
+                        except:
+                            continue
+                    else:
+                        continue
+                    
+                    if tarih >= kamera_limit:
+                        son_15_gun.append({**iptal, 'tarih_dt': tarih})
+                    else:
+                        eski_iptaller.append({**iptal, 'tarih_dt': tarih})
+                except:
+                    pass
+            
+            if son_15_gun:
+                son_15_gun_sorted = sorted(son_15_gun, key=lambda x: x['tarih_dt'], reverse=True)
+                en_son = son_15_gun_sorted[0]
+                
+                kamera_tarihleri.append(en_son['tarih'])
+                kamera_saatleri.append(en_son['saat'])
+                islem_nolari.append(en_son['islem_no'])
+                
+                if len(son_15_gun) == 1:
+                    kamera_durumu.append("✅ KAMERAYA BAK")
+                else:
+                    kamera_durumu.append(f"✅ KAMERAYA BAK ({len(son_15_gun)} işlem)")
+            
+            elif eski_iptaller:
+                kamera_tarihleri.append('-')
+                kamera_saatleri.append('-')
+                islem_nolari.append('-')
+                kamera_durumu.append(f"⚠️ 15 gün öncesi ({len(eski_iptaller)} işlem)")
+            
+            else:
+                kamera_tarihleri.append('-')
+                kamera_saatleri.append('-')
+                islem_nolari.append('-')
+                kamera_durumu.append('❓ Tarih okunamadı')
+        
+        else:
+            kamera_tarihleri.append('-')
+            kamera_saatleri.append('-')
+            islem_nolari.append('-')
+            kamera_durumu.append('❌ İptal kaydı yok')
+    
+    df['📅 Kamera Tarihi'] = kamera_tarihleri
+    df['⏰ Kamera Saati'] = kamera_saatleri
+    df['🔢 İşlem No'] = islem_nolari
+    df['📹 Kamera Durumu'] = kamera_durumu
+    
+    return df
 
 # ==================== SUPABASE BAĞLANTISI ====================
 # Güvenlik: Credentials st.secrets'tan okunuyor
@@ -2568,6 +2750,15 @@ if analysis_mode == "👔 SM Özet":
                                 
                                 # Analizleri yap
                                 int_df = detect_internal_theft(df_mag)
+                                
+                                # Kamera timestamp entegrasyonu
+                                if len(int_df) > 0:
+                                    try:
+                                        env_tarihi = df_mag['Envanter Tarihi'].iloc[0]
+                                        int_df = enrich_internal_theft_with_camera(int_df, selected_mag_kod, env_tarihi)
+                                    except:
+                                        pass
+                                
                                 chr_df = detect_chronic_products(df_mag)
                                 chr_fire_df = detect_chronic_fire(df_mag)
                                 cig_df = detect_cigarette_shortage(df_mag)
@@ -3068,6 +3259,15 @@ elif uploaded_file is not None:
                         
                         # Analizleri yap
                         int_df = detect_internal_theft(df_mag)
+                        
+                        # Kamera timestamp entegrasyonu
+                        if len(int_df) > 0:
+                            try:
+                                env_tarihi = df_mag['Envanter Tarihi'].iloc[0]
+                                int_df = enrich_internal_theft_with_camera(int_df, mag_kod, env_tarihi)
+                            except:
+                                pass
+                        
                         chr_df = detect_chronic_products(df_mag)
                         chr_fire_df = detect_chronic_fire(df_mag)
                         cig_df = detect_cigarette_shortage(df_mag)
@@ -3205,6 +3405,16 @@ elif uploaded_file is not None:
         
             # Analizler
             internal_df = detect_internal_theft(df_display)
+            
+            # Kamera timestamp entegrasyonu
+            if len(internal_df) > 0:
+                try:
+                    magaza_kodu = df_display['Mağaza Kodu'].iloc[0]
+                    envanter_tarihi = df_display['Envanter Tarihi'].iloc[0]
+                    internal_df = enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi)
+                except Exception as e:
+                    pass  # Hata olursa sessizce devam et
+            
             chronic_df = detect_chronic_products(df_display)
             chronic_fire_df = detect_chronic_fire(df_display)
             cigarette_df = detect_cigarette_shortage(df_display)
@@ -3399,6 +3609,15 @@ elif uploaded_file is not None:
                                     mag_adi = df_mag['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_mag.columns and len(df_mag) > 0 else ''
                                 
                                     int_df = detect_internal_theft(df_mag)
+                                    
+                                    # Kamera timestamp entegrasyonu
+                                    if len(int_df) > 0:
+                                        try:
+                                            env_tarihi = df_mag['Envanter Tarihi'].iloc[0]
+                                            int_df = enrich_internal_theft_with_camera(int_df, mag, env_tarihi)
+                                        except:
+                                            pass
+                                    
                                     chr_df = detect_chronic_products(df_mag)
                                     chr_fire_df = detect_chronic_fire(df_mag)
                                     cig_df = detect_cigarette_shortage(df_mag)
