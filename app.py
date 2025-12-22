@@ -1001,23 +1001,27 @@ def get_envanter_tarihleri_by_donem(donemler_tuple):
     try:
         if not donemler_tuple:
             return []
-        donemler = list(donemler_tuple)  # tuple'ı list'e çevir
-        query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
+        donemler = list(donemler_tuple)
+        
+        # Ana tablodan distinct tarihler çek (VIEW yerine - daha hızlı)
+        query = supabase.table('envanter_veri').select('envanter_tarihi').in_('envanter_donemi', donemler).limit(5000)
         result = query.execute()
+        
         if result.data:
             tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
-            # Tarihleri datetime'a çevir ve sırala
             tarih_dates = []
             for t in tarihler:
                 try:
                     if isinstance(t, str):
                         tarih_dates.append(pd.to_datetime(t).date())
+                    elif hasattr(t, 'date'):
+                        tarih_dates.append(t.date())
                     else:
                         tarih_dates.append(t)
                 except:
                     pass
-            return sorted(tarih_dates)
-    except:
+            return sorted(set(tarih_dates))
+    except Exception as e:
         pass
     return []
 
