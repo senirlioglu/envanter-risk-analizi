@@ -61,21 +61,35 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     if df_iptal.empty:
         return {}
     
-    # Sütun isimlerini bul
+    # Sütun isimlerini bul (STS_BW_10 formatına göre)
     col_mapping = {}
     for col in df_iptal.columns:
         col_lower = col.lower()
-        if 'mağaza' in col_lower and 'kod' in col_lower:
+        # Mağaza kodu
+        if 'mağaza' in col_lower and 'anahtar' in col_lower:
             col_mapping['magaza'] = col
-        elif 'malzeme' in col_lower or 'ürün kodu' in col_lower:
+        elif 'mağaza' in col_lower and 'kod' in col_lower:
+            col_mapping['magaza'] = col
+        # Malzeme kodu
+        elif 'malzeme' in col_lower and 'anahtar' in col_lower:
             col_mapping['malzeme'] = col
-        elif col_lower == 'tarih':
+        elif 'malzeme' in col_lower and 'kod' not in col_lower and 'metin' not in col_lower and 'ölçü' not in col_lower:
+            if 'malzeme' not in col_mapping:
+                col_mapping['malzeme'] = col
+        # Tarih
+        elif col_lower == 'tarih' or col_lower == 'tarih - anahtar':
             col_mapping['tarih'] = col
-        elif 'saat' in col_lower or 'zaman' in col_lower:
+        # Saat
+        elif 'fiş saati' in col_lower or col_lower == 'fiş saati - anahtar':
             col_mapping['saat'] = col
-        elif 'miktar' in col_lower and 'tutar' not in col_lower:
+        elif 'saat' in col_lower and 'anahtar' not in col_lower:
+            if 'saat' not in col_mapping:
+                col_mapping['saat'] = col
+        # Miktar
+        elif col_lower == 'miktar':
             col_mapping['miktar'] = col
-        elif 'işlem' in col_lower and ('no' in col_lower or 'numarası' in col_lower):
+        # İşlem numarası
+        elif 'işlem numarası' in col_lower and 'anahtar' not in col_lower:
             col_mapping['islem_no'] = col
     
     if 'magaza' not in col_mapping or 'malzeme' not in col_mapping:
