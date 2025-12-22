@@ -49,10 +49,12 @@ def get_iptal_verisi_from_sheets():
         csv_url = f'https://docs.google.com/spreadsheets/d/{IPTAL_SHEETS_ID}/gviz/tq?tqx=out:csv&sheet={IPTAL_SHEET_NAME}'
         df = pd.read_csv(csv_url, encoding='utf-8')
         df.columns = df.columns.str.strip()
+        print(f"DEBUG: Google Sheets'ten {len(df)} satır çekildi")
+        print(f"DEBUG: Sütunlar: {list(df.columns)[:5]}")
         return df
     except Exception as e:
         # Hata durumunda logla
-        print(f"Google Sheets veri çekme hatası: {e}")
+        print(f"DEBUG HATA: Google Sheets veri çekme hatası: {e}")
         return pd.DataFrame()
 
 
@@ -61,7 +63,10 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     df_iptal = get_iptal_verisi_from_sheets()
     
     if df_iptal.empty:
+        print(f"DEBUG: df_iptal BOŞ!")
         return {}
+    
+    print(f"DEBUG: Mağaza {magaza_kodu} için arama yapılıyor, {len(malzeme_kodlari)} ürün")
     
     # Sütun isimlerini bul (STS_BW_10 formatına göre)
     col_mapping = {}
@@ -88,7 +93,10 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         elif 'numaras' in col_lower and 'anahtar' not in col_lower:
             col_mapping['islem_no'] = col
     
+    print(f"DEBUG: col_mapping = {col_mapping}")
+    
     if 'magaza' not in col_mapping or 'malzeme' not in col_mapping:
+        print(f"DEBUG: Sütun eşleştirmesi BAŞARISIZ!")
         return {}
     
     # Mağaza filtrele
