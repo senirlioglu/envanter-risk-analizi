@@ -77,8 +77,10 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         # Malzeme - Anahtar sütunu  
         if 'ANAHTAR' in col_upper and 'MALZEME' in col_upper:
             col_mapping['malzeme'] = col
-        # Tarih
-        if col == 'Tarih' or col_upper == 'TARIH':
+        # Tarih - "Tarih - Anahtar" sütunu (Tarih boş gelebilir)
+        if col == 'Tarih - Anahtar' or col_upper == 'TARİH - ANAHTAR':
+            col_mapping['tarih'] = col
+        elif (col == 'Tarih' or col_upper == 'TARIH') and 'tarih' not in col_mapping:
             col_mapping['tarih'] = col
         # Fiş Saati
         if 'SAATİ' in col_upper or 'SAATI' in col_upper:
@@ -97,8 +99,8 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         col_mapping['magaza'] = cols[7]  # Mağaza - Anahtar genelde 8. sütun
     if 'malzeme' not in col_mapping and len(cols) > 17:
         col_mapping['malzeme'] = cols[17]  # Malzeme - Anahtar genelde 18. sütun
-    if 'tarih' not in col_mapping and len(cols) > 0:
-        col_mapping['tarih'] = cols[0]  # Tarih genelde 1. sütun
+    if 'tarih' not in col_mapping and len(cols) > 3:
+        col_mapping['tarih'] = cols[3]  # Tarih - Anahtar genelde 4. sütun (index 3)
     if 'saat' not in col_mapping and len(cols) > 31:
         col_mapping['saat'] = cols[31]  # Fiş Saati genelde 32. sütun
     if 'islem_no' not in col_mapping and len(cols) > 36:
