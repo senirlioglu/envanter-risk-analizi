@@ -3431,9 +3431,13 @@ elif uploaded_file is not None:
                 try:
                     magaza_kodu = df_display['Mağaza Kodu'].iloc[0]
                     envanter_tarihi = df_display['Envanter Tarihi'].iloc[0]
+                    print(f"DEBUG MAIN: Kamera entegrasyonu başlıyor - Mağaza: {magaza_kodu}")
                     internal_df = enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi)
+                    print(f"DEBUG MAIN: Kamera entegrasyonu tamamlandı")
                 except Exception as e:
-                    pass  # Hata olursa sessizce devam et
+                    print(f"DEBUG MAIN HATA: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             chronic_df = detect_chronic_products(df_display)
             chronic_fire_df = detect_chronic_fire(df_display)
