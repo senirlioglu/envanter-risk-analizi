@@ -2902,10 +2902,11 @@ if analysis_mode == "👔 SM Özet":
         
         if donem_tarihleri and len(donem_tarihleri) > 1:
             with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
-                col_t1, col_t2 = st.columns(2)
+                min_tarih = min(donem_tarihleri)
+                max_tarih = max(donem_tarihleri)
+                
+                col_t1, col_t2, col_t3 = st.columns([2, 2, 1])
                 with col_t1:
-                    min_tarih = min(donem_tarihleri)
-                    max_tarih = max(donem_tarihleri)
                     tarih_baslangic = st.date_input(
                         "Başlangıç Tarihi", 
                         value=min_tarih,
@@ -2921,6 +2922,11 @@ if analysis_mode == "👔 SM Özet":
                         max_value=max_tarih,
                         key="sm_tarih_bit"
                     )
+                with col_t3:
+                    st.write("")  # Boşluk için
+                    st.write("")  # Hizalama için
+                    if st.button("🗑️ Temizle", key="sm_clear_tarih", help="Tarih filtresini kaldır"):
+                        st.rerun()
                 
                 # Eğer varsayılan değerler seçiliyse filtre uygulanmasın
                 if tarih_baslangic == min_tarih and tarih_bitis == max_tarih:
@@ -3309,10 +3315,11 @@ elif analysis_mode == "🌍 GM Özet":
         
         if donem_tarihleri and len(donem_tarihleri) > 1:
             with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
-                col_t1, col_t2 = st.columns(2)
+                min_tarih = min(donem_tarihleri)
+                max_tarih = max(donem_tarihleri)
+                
+                col_t1, col_t2, col_t3 = st.columns([2, 2, 1])
                 with col_t1:
-                    min_tarih = min(donem_tarihleri)
-                    max_tarih = max(donem_tarihleri)
                     gm_tarih_baslangic = st.date_input(
                         "Başlangıç Tarihi", 
                         value=min_tarih,
@@ -3328,6 +3335,12 @@ elif analysis_mode == "🌍 GM Özet":
                         max_value=max_tarih,
                         key="gm_tarih_bit"
                     )
+                with col_t3:
+                    st.write("")  # Boşluk için
+                    st.write("")  # Hizalama için
+                    if st.button("🗑️ Temizle", key="gm_clear_tarih", help="Tarih filtresini kaldır"):
+                        # Session state'i temizle ve sayfayı yenile
+                        st.rerun()
                 
                 # Eğer varsayılan değerler seçiliyse filtre uygulanmasın
                 if gm_tarih_baslangic == min_tarih and gm_tarih_bitis == max_tarih:
