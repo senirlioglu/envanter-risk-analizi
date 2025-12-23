@@ -1113,81 +1113,85 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Mod seçimi - Kullanıcıya göre
+# Kullanıcı bilgisi
 current_user = st.session_state.user
 is_gm = current_user == "ziya"
 
-# Mod ve yenileme butonları
-col_mode, col_refresh = st.columns([6, 1])
+# ==================== YENİ UI YAPISI ====================
+# Dosya yükleme (üstte)
+uploaded_file = st.file_uploader("📁 Excel dosyası yükleyin (Parçalı veya Sürekli - otomatik algılanır)", type=['xlsx', 'xls'])
 
-with col_mode:
-    if is_gm:
-        manual_mode = st.radio("📊 Mod", ["📁 Dosya Yükle", "👔 SM Özet", "🌍 GM Özet"], horizontal=True)
-    else:
-        manual_mode = st.radio("📊 Mod", ["📁 Dosya Yükle", "👔 SM Özet"], horizontal=True)
-
-with col_refresh:
-    if manual_mode in ["👔 SM Özet", "🌍 GM Özet"]:
-        if st.button("🔄", help="Verileri yenile"):
-            st.cache_data.clear()
-            if "df_all" in st.session_state:
-                del st.session_state.df_all
-            st.rerun()
-
-# Analiz modu belirleme
-if 'analysis_mode' not in st.session_state:
-    st.session_state['analysis_mode'] = None
-
-uploaded_file = None
-
-if manual_mode == "📁 Dosya Yükle":
-    uploaded_file = st.file_uploader("📁 Excel dosyası yükleyin (Parçalı veya Sürekli - otomatik algılanır)", type=['xlsx', 'xls'])
-    
-    if uploaded_file is not None and SUREKLI_MODULE_LOADED:
-        # Dosyayı oku ve türünü algıla
-        try:
-            xl = pd.ExcelFile(uploaded_file)
-            sheet_names = xl.sheet_names
-            best_sheet = None
-            max_cols = 0
-            for sheet in sheet_names:
-                temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
-                if len(temp_df.columns) > max_cols:
-                    max_cols = len(temp_df.columns)
-                    best_sheet = sheet
-            
-            df_raw_check = pd.read_excel(uploaded_file, sheet_name=best_sheet)
-            detected_type = detect_envanter_type(df_raw_check)
-            
-            if detected_type == 'surekli':
-                st.session_state['analysis_mode'] = "🔄 Sürekli Envanter"
-                st.session_state['df_surekli'] = df_raw_check
-                st.success(f"✅ **Sürekli Envanter** algılandı: {len(df_raw_check)} satır")
-            else:
-                # Parçalı envanter - alt mod seçimi
-                parcali_mode = st.radio("📊 Analiz Türü", ["🏪 Tek Mağaza", "🌍 Bölge Özeti"], horizontal=True)
-                st.session_state['analysis_mode'] = parcali_mode
-                st.success(f"✅ **Parçalı Envanter** algılandı: {len(df_raw_check)} satır")
-        except Exception as e:
-            st.error(f"Dosya okuma hatası: {str(e)}")
-            
-    elif uploaded_file is not None:
-        # Modül yüklü değilse eski sisteme devam
-        st.session_state['analysis_mode'] = "🏪 Tek Mağaza"
-    
-    # uploaded_file yoksa session state'i temizle
-    if uploaded_file is None:
-        st.session_state['analysis_mode'] = None
-        if 'df_surekli' in st.session_state:
-            del st.session_state['df_surekli']
+# Dosya yüklendiyse işle ve session state'e kaydet
+if uploaded_file is not None:
+    try:
+        xl = pd.ExcelFile(uploaded_file)
+        best_sheet = None
+        max_cols = 0
+        for sheet in xl.sheet_names:
+            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
+            if len(temp_df.columns) > max_cols:
+                max_cols = len(temp_df.columns)
+                best_sheet = sheet
         
-elif manual_mode == "👔 SM Özet":
-    st.session_state['analysis_mode'] = "👔 SM Özet"
-elif manual_mode == "🌍 GM Özet":
-    st.session_state['analysis_mode'] = "🌍 GM Özet"
+        df_uploaded = pd.read_excel(uploaded_file, sheet_name=best_sheet)
+        
+        # Otomatik algılama
+        if SUREKLI_MODULE_LOADED:
+            detected_type = detect_envanter_type(df_uploaded)
+        else:
+            detected_type = 'parcali'
+        
+        st.session_state['uploaded_df'] = df_uploaded
+        st.session_state['uploaded_type'] = detected_type
+        
+        if detected_type == 'surekli':
+            st.success(f"✅ **Sürekli Envanter** algılandı: {len(df_uploaded)} satır")
+        else:
+            st.success(f"✅ **Parçalı Envanter** algılandı: {len(df_uploaded)} satır")
+            
+    except Exception as e:
+        st.error(f"Dosya okuma hatası: {str(e)}")
 
-# Session state'ten analysis_mode'u al
-analysis_mode = st.session_state.get('analysis_mode')
+# Dosya kaldırıldıysa session'ı temizle
+if uploaded_file is None and 'uploaded_df' in st.session_state:
+    del st.session_state['uploaded_df']
+    if 'uploaded_type' in st.session_state:
+        del st.session_state['uploaded_type']
+
+st.markdown("---")
+
+# ==================== ÜST SEKMELER ====================
+if is_gm:
+    ust_sekme = st.radio("📊 Görünüm", ["👤 SM Özet", "👥 BS Özet", "🌐 GM Özet"], horizontal=True)
+else:
+    ust_sekme = st.radio("📊 Görünüm", ["👤 SM Özet", "👥 BS Özet"], horizontal=True)
+
+# Yenileme butonu
+col_spacer, col_refresh = st.columns([10, 1])
+with col_refresh:
+    if st.button("🔄", help="Verileri yenile"):
+        st.cache_data.clear()
+        st.rerun()
+
+# ==================== ALT SEKMELER (Parçalı / Sürekli) ====================
+alt_sekme = st.radio("📦 Envanter Tipi", ["📦 Parçalı", "🔄 Sürekli"], horizontal=True)
+
+st.markdown("---")
+
+# Analysis mode belirleme (eski kodla uyumluluk için)
+if alt_sekme == "📦 Parçalı":
+    if ust_sekme == "👤 SM Özet":
+        analysis_mode = "👔 SM Özet"
+    elif ust_sekme == "👥 BS Özet":
+        analysis_mode = "👥 BS Özet"
+    elif ust_sekme == "🌐 GM Özet":
+        analysis_mode = "🌍 GM Özet"
+    else:
+        analysis_mode = "📦 Parçalı"
+else:  # Sürekli
+    analysis_mode = "🔄 Sürekli Envanter"
+    if 'uploaded_df' in st.session_state and st.session_state.get('uploaded_type') == 'surekli':
+        st.session_state['df_surekli'] = st.session_state['uploaded_df']
 
 
 def analyze_inventory(df):
@@ -3780,24 +3784,12 @@ elif analysis_mode == "🌍 GM Özet":
                     - 🏪 Tüm Mağazalar (Risk puanına göre sıralı)
                     """)
 
-elif uploaded_file is not None and analysis_mode in ["🏪 Tek Mağaza", "🌍 Bölge Özeti"]:
+# ==================== PARÇALI ENVANTER ANALİZİ (Dosyadan) ====================
+elif analysis_mode == "📦 Parçalı" and 'uploaded_df' in st.session_state and st.session_state.get('uploaded_type') == 'parcali':
+    df_raw = st.session_state['uploaded_df']
+    
     try:
-        xl = pd.ExcelFile(uploaded_file)
-        sheet_names = xl.sheet_names
-        
-        best_sheet = None
-        max_cols = 0
-        
-        for sheet in sheet_names:
-            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
-            if len(temp_df.columns) > max_cols:
-                max_cols = len(temp_df.columns)
-                best_sheet = sheet
-        
-        df_raw = pd.read_excel(uploaded_file, sheet_name=best_sheet)
-        st.success(f"✅ {len(df_raw)} satır, {len(df_raw.columns)} sütun ({best_sheet})")
-        
-        # ===== ARKA PLANDA SUPABASE'E KAYIT =====
+        # Supabase'e kaydet
         with st.spinner("Veritabanına kaydediliyor..."):
             try:
                 inserted, skipped, result_info = save_to_supabase(df_raw)
@@ -3806,7 +3798,6 @@ elif uploaded_file is not None and analysis_mode in ["🏪 Tek Mağaza", "🌍 B
                 elif skipped > 0:
                     st.info(f"⏭️ Tüm envanterler zaten mevcut ({skipped} envanter)")
             except Exception as e:
-                # Supabase hatası analizi engellemesin
                 st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:50]}")
         
         df = analyze_inventory(df_raw)
@@ -4386,9 +4377,11 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
     st.markdown("## 🔄 Sürekli Envanter Analizi")
     st.caption("Et-Tavuk, Ekmek, Meyve/Sebze haftalık envanter takibi")
     
-    if 'df_surekli' in st.session_state:
+    # Dosya yüklenmişse kullan
+    if 'df_surekli' in st.session_state and st.session_state['df_surekli'] is not None:
         df_surekli = st.session_state['df_surekli']
         magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
+        veri_kaynagi = "dosya"
         
         # ===== SUPABASE'E KAYIT =====
         with st.spinner("Veritabanına kaydediliyor..."):
@@ -4402,7 +4395,30 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                         st.info(f"⏭️ Tüm kayıtlar zaten mevcut")
             except Exception as e:
                 st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:50]}")
+    else:
+        # Dosya yoksa Supabase'den çek
+        veri_kaynagi = "supabase"
+        st.info("📊 Supabase'den sürekli envanter özeti yükleniyor...")
         
+        try:
+            # Son hafta verisini çek
+            result = supabase.table('surekli_envanter_ozet').select('*').order('envanter_tarihi', desc=True).limit(1000).execute()
+            
+            if result.data:
+                df_surekli_ozet = pd.DataFrame(result.data)
+                magazalar = df_surekli_ozet['magaza_kodu'].unique().tolist()
+                st.success(f"✅ {len(result.data)} kayıt yüklendi ({len(magazalar)} mağaza)")
+            else:
+                st.warning("⚠️ Henüz sürekli envanter verisi yok. Lütfen Excel dosyası yükleyin.")
+                df_surekli_ozet = None
+                magazalar = []
+        except Exception as e:
+            st.error(f"Supabase hatası: {str(e)}")
+            df_surekli_ozet = None
+            magazalar = []
+    
+    # Veri varsa analiz göster
+    if veri_kaynagi == "dosya" or (veri_kaynagi == "supabase" and df_surekli_ozet is not None):
         # Alt sekmeler
         surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon"])
         
