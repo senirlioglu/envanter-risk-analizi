@@ -4381,7 +4381,6 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
     if 'df_surekli' in st.session_state and st.session_state['df_surekli'] is not None:
         df_surekli = st.session_state['df_surekli']
         magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
-        veri_kaynagi = "dosya"
         
         # ===== SUPABASE'E KAYIT =====
         with st.spinner("Veritabanına kaydediliyor..."):
@@ -4395,30 +4394,7 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                         st.info(f"⏭️ Tüm kayıtlar zaten mevcut")
             except Exception as e:
                 st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:50]}")
-    else:
-        # Dosya yoksa Supabase'den çek
-        veri_kaynagi = "supabase"
-        st.info("📊 Supabase'den sürekli envanter özeti yükleniyor...")
         
-        try:
-            # Son hafta verisini çek
-            result = supabase.table('surekli_envanter_ozet').select('*').order('envanter_tarihi', desc=True).limit(1000).execute()
-            
-            if result.data:
-                df_surekli_ozet = pd.DataFrame(result.data)
-                magazalar = df_surekli_ozet['magaza_kodu'].unique().tolist()
-                st.success(f"✅ {len(result.data)} kayıt yüklendi ({len(magazalar)} mağaza)")
-            else:
-                st.warning("⚠️ Henüz sürekli envanter verisi yok. Lütfen Excel dosyası yükleyin.")
-                df_surekli_ozet = None
-                magazalar = []
-        except Exception as e:
-            st.error(f"Supabase hatası: {str(e)}")
-            df_surekli_ozet = None
-            magazalar = []
-    
-    # Veri varsa analiz göster
-    if veri_kaynagi == "dosya" or (veri_kaynagi == "supabase" and df_surekli_ozet is not None):
         # Alt sekmeler
         surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon"])
         
@@ -4578,10 +4554,40 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                     st.dataframe(anormal_df[display_cols], use_container_width=True, hide_index=True)
                 else:
                     st.success("✅ Anormal miktar tespit edilmedi")
+    else:
+        # Dosya yüklenmemiş - Supabase özet göster
+        st.info("📊 Sürekli envanter dosyası yükleyin veya aşağıdan Supabase özetini görüntüleyin")
+        
+        try:
+            result = supabase.table('surekli_envanter_ozet').select('*').order('envanter_tarihi', desc=True).limit(500).execute()
+            
+            if result.data:
+                df_ozet = pd.DataFrame(result.data)
+                st.success(f"✅ Supabase'den {len(result.data)} kayıt yüklendi")
+                
+                # SM bazlı özet
+                if 'sm' in df_ozet.columns:
+                    sm_ozet = df_ozet.groupby('sm').agg({
+                        'magaza_kodu': 'nunique',
+                        'fark_tutari': 'sum',
+                        'fire_tutari': 'sum',
+                        'satis_hasilati': 'sum'
+                    }).reset_index()
+                    sm_ozet.columns = ['SM', 'Mağaza', 'Fark', 'Fire', 'Satış']
+                    sm_ozet['Kayıp'] = abs(sm_ozet['Fark']) + abs(sm_ozet['Fire'])
+                    sm_ozet['Oran'] = (sm_ozet['Kayıp'] / sm_ozet['Satış'] * 100).round(2)
+                    sm_ozet = sm_ozet.sort_values('Oran', ascending=False)
+                    
+                    st.subheader("👤 SM Bazlı Sürekli Envanter Özeti")
+                    st.dataframe(sm_ozet, use_container_width=True, hide_index=True)
+            else:
+                st.warning("⚠️ Henüz sürekli envanter verisi yok")
+        except Exception as e:
+            st.warning(f"⚠️ Supabase bağlantı hatası: {str(e)[:50]}")
 
 else:
     # Veri yok durumu
     if uploaded_file is None and alt_sekme == "📦 Parçalı":
         st.info("👆 Parçalı envanter analizi için Excel dosyası yükleyin")
     elif uploaded_file is None and alt_sekme == "🔄 Sürekli":
-        st.info("👆 Sürekli envanter analizi için Excel dosyası yükleyin veya Supabase'den veri bekleniyor")
+        st.info("👆 Sürekli envanter analizi için Excel dosyası yükleyin")
