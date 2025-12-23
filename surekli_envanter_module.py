@@ -575,3 +575,285 @@ def get_magaza_gecmis(supabase_client, magaza_kodu, hafta=4):
         return pd.DataFrame(r.data) if r.data else None
     except:
         return None
+
+# ==================== ÜRÜN BAZLI TAKİP FONKSİYONLARI ====================
+# Dönemler arası karşılaştırma için ürün bazlı kayıt
+
+def prepare_urun_bazli_kayit(df, envanter_tarihi=None):
+    """
+    Ürün bazında Supabase kayıtları hazırla
+    Her satır = 1 ürün kaydı (magaza + urun + envanter_sayisi + tarih)
+    """
+    if envanter_tarihi is None:
+        envanter_tarihi = pd.to_datetime(df['Envanter Tarihi']).max() if 'Envanter Tarihi' in df.columns else datetime.now()
+    if isinstance(envanter_tarihi, str):
+        envanter_tarihi = pd.to_datetime(envanter_tarihi)
+
+    records = []
+    magaza_adi_col = get_magaza_adi_col(df)
+
+    # Gerekli kolonlar
+    required_cols = ['Mağaza Kodu', 'Mal Kodu']
+    if not all(col in df.columns for col in required_cols):
+        return records
+
+    # Envanter sayısı kolonu bul
+    envanter_sayisi_col = None
+    for col in ['Envanter Sayısı', 'Envanter Sayisi', 'Env Sayısı']:
+        if col in df.columns:
+            envanter_sayisi_col = col
+            break
+
+    for _, row in df.iterrows():
+        magaza_kodu = str(row['Mağaza Kodu'])
+        bilgi = get_magaza_bilgi(magaza_kodu)
+
+        # Ürün bilgileri
+        urun_kodu = str(row.get('Mal Kodu', ''))
+        urun_adi = str(row.get('Mal Tanım', row.get('Ürün Adı', '')))[:200]
+        kategori = str(row.get('Depolama Koşulu', ''))
+
+        # Envanter sayısı (dönem numarası)
+        envanter_sayisi = int(row[envanter_sayisi_col]) if envanter_sayisi_col and pd.notna(row.get(envanter_sayisi_col)) else 1
+
+        # Değerler
+        fark_miktari = float(row.get('Fark Miktarı', 0) or 0)
+        fark_tutari = float(row.get('Fark Tutarı', 0) or 0)
+        fire_miktari = float(row.get('Fire Miktarı', 0) or 0)
+        fire_tutari = float(row.get('Fire Tutarı', 0) or 0)
+        satir_iptal_miktari = float(row.get('İptal Satır Miktarı', 0) or 0)
+        satir_iptal_tutari = float(row.get('İptal Satır Tutarı', 0) or 0)
+        satis_miktari = float(row.get('Satış Miktarı', 0) or 0)
+        satis_tutari = float(row.get('Satış Tutarı', row.get('Satış Hasılatı', 0)) or 0)
+
+        records.append({
+            'magaza_kodu': magaza_kodu,
+            'magaza_adi': str(df[magaza_adi_col].iloc[0])[:100] if magaza_adi_col else '',
+            'sm': bilgi['sm'],
+            'bs': bilgi['bs'],
+            'urun_kodu': urun_kodu,
+            'urun_adi': urun_adi,
+            'kategori': kategori,
+            'envanter_sayisi': envanter_sayisi,
+            'envanter_tarihi': envanter_tarihi.strftime('%Y-%m-%d'),
+            'fark_miktari': round(fark_miktari, 3),
+            'fark_tutari': round(fark_tutari, 2),
+            'fire_miktari': round(fire_miktari, 3),
+            'fire_tutari': round(fire_tutari, 2),
+            'satir_iptal_miktari': round(satir_iptal_miktari, 3),
+            'satir_iptal_tutari': round(satir_iptal_tutari, 2),
+            'satis_miktari': round(satis_miktari, 3),
+            'satis_tutari': round(satis_tutari, 2)
+        })
+
+    return records
+
+
+def save_urun_bazli_to_supabase(supabase_client, records, batch_size=100):
+    """
+    Ürün bazlı kayıtları Supabase'e yaz
+    Tablo: surekli_urun_detay
+    Unique: magaza_kodu + urun_kodu + envanter_sayisi + envanter_tarihi
+    """
+    if not records:
+        return 0, 0
+
+    inserted, skipped = 0, 0
+
+    # Batch olarak kaydet
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        try:
+            supabase_client.table('surekli_urun_detay').upsert(
+                batch,
+                on_conflict='magaza_kodu,urun_kodu,envanter_sayisi,envanter_tarihi'
+            ).execute()
+            inserted += len(batch)
+        except Exception as e:
+            # Tek tek dene
+            for r in batch:
+                try:
+                    supabase_client.table('surekli_urun_detay').upsert(
+                        r,
+                        on_conflict='magaza_kodu,urun_kodu,envanter_sayisi,envanter_tarihi'
+                    ).execute()
+                    inserted += 1
+                except Exception as e2:
+                    if 'duplicate' in str(e2).lower():
+                        skipped += 1
+                    else:
+                        skipped += 1
+
+    return inserted, skipped
+
+
+def get_onceki_envanter_urunler(supabase_client, magaza_kodu, envanter_sayisi, envanter_tarihi=None):
+    """
+    Önceki envanter sayısındaki ürünleri çek
+    Örnek: envanter_sayisi=2 ise, envanter_sayisi=1 verilerini getirir
+    """
+    onceki_sayisi = envanter_sayisi - 1
+    if onceki_sayisi < 1:
+        return None
+
+    try:
+        query = supabase_client.table('surekli_urun_detay').select('*').eq('magaza_kodu', str(magaza_kodu)).eq('envanter_sayisi', onceki_sayisi)
+
+        # Tarih filtresi varsa ekle (aynı yıl içinde)
+        if envanter_tarihi:
+            if isinstance(envanter_tarihi, str):
+                envanter_tarihi = pd.to_datetime(envanter_tarihi)
+            # Son 30 gün içinde
+            min_tarih = (envanter_tarihi - timedelta(days=30)).strftime('%Y-%m-%d')
+            query = query.gte('envanter_tarihi', min_tarih)
+
+        result = query.execute()
+        return pd.DataFrame(result.data) if result.data else None
+    except Exception as e:
+        print(f"Önceki envanter çekme hatası: {e}")
+        return None
+
+
+def karsilastir_donemler(df_current, df_onceki):
+    """
+    İki dönem arasındaki farkları hesapla ve şüpheli durumları bul
+
+    Returns:
+        DataFrame: Karşılaştırma sonuçları
+            - urun_kodu, urun_adi
+            - onceki_fark, simdiki_fark, fark_degisim
+            - onceki_fire, simdiki_fire, fire_degisim
+            - onceki_iptal, simdiki_iptal, iptal_degisim
+            - uyari_tipi: 'fire_yazmadan_acik', 'iptal_artisi', 'supheli_desen' vs.
+    """
+    if df_onceki is None or df_onceki.empty:
+        return None
+
+    sonuclar = []
+
+    # Ürün bazında karşılaştır
+    for _, row in df_current.iterrows():
+        urun_kodu = row.get('urun_kodu', row.get('Mal Kodu', ''))
+
+        # Önceki dönemde bu ürünü bul
+        onceki = df_onceki[df_onceki['urun_kodu'] == str(urun_kodu)]
+        if onceki.empty:
+            continue
+
+        onceki_row = onceki.iloc[0]
+
+        # Değerleri al
+        simdiki_fark = float(row.get('fark_tutari', row.get('Fark Tutarı', 0)) or 0)
+        onceki_fark = float(onceki_row.get('fark_tutari', 0) or 0)
+        fark_degisim = simdiki_fark - onceki_fark
+
+        simdiki_fire = float(row.get('fire_tutari', row.get('Fire Tutarı', 0)) or 0)
+        onceki_fire = float(onceki_row.get('fire_tutari', 0) or 0)
+        fire_degisim = simdiki_fire - onceki_fire
+
+        simdiki_iptal = float(row.get('satir_iptal_tutari', row.get('İptal Satır Tutarı', 0)) or 0)
+        onceki_iptal = float(onceki_row.get('satir_iptal_tutari', 0) or 0)
+        iptal_degisim = simdiki_iptal - onceki_iptal
+
+        # Uyarı tipleri belirle
+        uyarilar = []
+
+        # 🚨 Fire yazmadan açık vermiş (en önemli!)
+        if fark_degisim < -10 and abs(fire_degisim) < 1:
+            uyarilar.append('🚨 Fire yazmadan açık!')
+
+        # ⚠️ Satır iptali artmış ama fire yok
+        if iptal_degisim > 10 and abs(fire_degisim) < 1:
+            uyarilar.append('⚠️ İptal artışı, fire yok')
+
+        # 📈 Fark kötüleşmiş
+        if fark_degisim < -50:
+            uyarilar.append('📈 Fark kötüleşti')
+
+        # Sadece değişim varsa kaydet
+        if abs(fark_degisim) > 1 or abs(fire_degisim) > 1 or abs(iptal_degisim) > 1 or uyarilar:
+            sonuclar.append({
+                'urun_kodu': str(urun_kodu),
+                'urun_adi': str(row.get('urun_adi', row.get('Mal Tanım', '')))[:100],
+                'kategori': str(row.get('kategori', row.get('Depolama Koşulu', ''))),
+                'onceki_fark': round(onceki_fark, 2),
+                'simdiki_fark': round(simdiki_fark, 2),
+                'fark_degisim': round(fark_degisim, 2),
+                'onceki_fire': round(onceki_fire, 2),
+                'simdiki_fire': round(simdiki_fire, 2),
+                'fire_degisim': round(fire_degisim, 2),
+                'onceki_iptal': round(onceki_iptal, 2),
+                'simdiki_iptal': round(simdiki_iptal, 2),
+                'iptal_degisim': round(iptal_degisim, 2),
+                'uyari': ' | '.join(uyarilar) if uyarilar else ''
+            })
+
+    if not sonuclar:
+        return None
+
+    df_sonuc = pd.DataFrame(sonuclar)
+    # Uyarılı olanları üste al, sonra fark değişimine göre sırala
+    df_sonuc['_has_uyari'] = df_sonuc['uyari'].apply(lambda x: 0 if x else 1)
+    df_sonuc = df_sonuc.sort_values(['_has_uyari', 'fark_degisim'], ascending=[True, True])
+    df_sonuc = df_sonuc.drop(columns=['_has_uyari'])
+
+    return df_sonuc
+
+
+def analiz_donem_karsilastirma(supabase_client, df, envanter_tarihi=None):
+    """
+    Ana fonksiyon: Dosya yüklendiğinde çağrılır
+    1. Mevcut veriyi Supabase'e kaydet
+    2. Önceki dönemle karşılaştır
+    3. Şüpheli durumları raporla
+    """
+    # Envanter sayısı bul
+    envanter_sayisi_col = None
+    for col in ['Envanter Sayısı', 'Envanter Sayisi', 'Env Sayısı']:
+        if col in df.columns:
+            envanter_sayisi_col = col
+            break
+
+    if not envanter_sayisi_col:
+        return None, "Envanter Sayısı kolonu bulunamadı"
+
+    # Tarih bul
+    if envanter_tarihi is None:
+        envanter_tarihi = pd.to_datetime(df['Envanter Tarihi']).max() if 'Envanter Tarihi' in df.columns else datetime.now()
+
+    # Envanter sayısını al (çoğunluk değeri)
+    envanter_sayisi = int(df[envanter_sayisi_col].mode().iloc[0])
+
+    # 1. Kayıtları hazırla ve kaydet
+    records = prepare_urun_bazli_kayit(df, envanter_tarihi)
+    if records:
+        inserted, skipped = save_urun_bazli_to_supabase(supabase_client, records)
+        print(f"Ürün bazlı kayıt: {inserted} eklendi, {skipped} atlandı")
+
+    # 2. Önceki dönemi çek (mağaza bazında)
+    tum_karsilastirmalar = []
+
+    for magaza_kodu in df['Mağaza Kodu'].unique():
+        df_magaza = df[df['Mağaza Kodu'] == magaza_kodu]
+
+        # Önceki dönem verisi
+        df_onceki = get_onceki_envanter_urunler(
+            supabase_client,
+            magaza_kodu,
+            envanter_sayisi,
+            envanter_tarihi
+        )
+
+        if df_onceki is not None and not df_onceki.empty:
+            # DataFrame formatına çevir (kayıt için hazırlanan formattan)
+            df_current_records = pd.DataFrame(prepare_urun_bazli_kayit(df_magaza, envanter_tarihi))
+
+            karsilastirma = karsilastir_donemler(df_current_records, df_onceki)
+            if karsilastirma is not None:
+                karsilastirma['magaza_kodu'] = str(magaza_kodu)
+                tum_karsilastirmalar.append(karsilastirma)
+
+    if tum_karsilastirmalar:
+        return pd.concat(tum_karsilastirmalar, ignore_index=True), None
+
+    return None, "Önceki dönem verisi bulunamadı veya karşılaştırılacak değişiklik yok"

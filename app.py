@@ -21,7 +21,10 @@ try:
         get_magazalar_by_sm, get_magazalar_by_bs, get_magaza_bilgi,
         SM_BS_MAGAZA, SEGMENT_URUN,
         hesapla_tum_sm_risk, hesapla_tum_bs_risk, hesapla_urun_bolge_median,
-        prepare_surekli_kayit, save_surekli_to_supabase, get_onceki_hafta_verisi
+        prepare_surekli_kayit, save_surekli_to_supabase, get_onceki_hafta_verisi,
+        # Ürün bazlı dönem karşılaştırma
+        prepare_urun_bazli_kayit, save_urun_bazli_to_supabase,
+        get_onceki_envanter_urunler, karsilastir_donemler, analiz_donem_karsilastirma
     )
     SUREKLI_MODULE_LOADED = True
 except ImportError as e:
@@ -4420,7 +4423,7 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
     # Veri varsa analiz göster
     if veri_kaynagi == "dosya" or (veri_kaynagi == "supabase" and df_surekli_ozet is not None):
         # Alt sekmeler
-        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon"])
+        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon", "📅 Dönem Karşılaştırma"])
         
         with surekli_tabs[0]:  # ÖZET
             st.subheader("📊 Genel Özet")
@@ -4578,6 +4581,86 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                     st.dataframe(anormal_df[display_cols], use_container_width=True, hide_index=True)
                 else:
                     st.success("✅ Anormal miktar tespit edilmedi")
+
+        with surekli_tabs[5]:  # DÖNEM KARŞILAŞTIRMA
+            st.subheader("📅 Dönem Karşılaştırma")
+            st.caption("Envanter sayıları arasındaki fark değişimlerini analiz eder")
+
+            # Sadece dosya yüklendiyse çalışır
+            if veri_kaynagi == "dosya":
+                # Envanter sayısı kontrolü
+                envanter_sayisi_col = None
+                for col in ['Envanter Sayısı', 'Envanter Sayisi', 'Env Sayısı']:
+                    if col in df_surekli.columns:
+                        envanter_sayisi_col = col
+                        break
+
+                if envanter_sayisi_col:
+                    current_envanter_sayisi = int(df_surekli[envanter_sayisi_col].mode().iloc[0])
+                    st.info(f"📊 **Mevcut Envanter Sayısı:** {current_envanter_sayisi}")
+
+                    if current_envanter_sayisi > 1:
+                        # Ürün bazlı kaydet ve karşılaştır
+                        with st.spinner("Dönemler karşılaştırılıyor..."):
+                            try:
+                                df_karsilastirma, hata = analiz_donem_karsilastirma(supabase, df_surekli)
+
+                                if df_karsilastirma is not None and len(df_karsilastirma) > 0:
+                                    # Uyarılı olanları ayır
+                                    df_uyarili = df_karsilastirma[df_karsilastirma['uyari'] != '']
+
+                                    if len(df_uyarili) > 0:
+                                        st.error(f"🚨 **{len(df_uyarili)} üründe şüpheli durum tespit edildi!**")
+
+                                        # Uyarı tiplerine göre gruplama
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            fire_yok = len(df_uyarili[df_uyarili['uyari'].str.contains('Fire yazmadan', na=False)])
+                                            st.metric("🚨 Fire Yazmadan Açık", fire_yok)
+                                        with col2:
+                                            iptal_artis = len(df_uyarili[df_uyarili['uyari'].str.contains('İptal artışı', na=False)])
+                                            st.metric("⚠️ İptal Artışı", iptal_artis)
+                                        with col3:
+                                            fark_kotulesti = len(df_uyarili[df_uyarili['uyari'].str.contains('kötüleşti', na=False)])
+                                            st.metric("📈 Fark Kötüleşti", fark_kotulesti)
+
+                                        st.markdown("### 🚨 Şüpheli Ürünler")
+                                        display_cols = ['magaza_kodu', 'urun_kodu', 'urun_adi', 'kategori',
+                                                       'onceki_fark', 'simdiki_fark', 'fark_degisim',
+                                                       'onceki_fire', 'simdiki_fire', 'fire_degisim', 'uyari']
+                                        display_cols = [c for c in display_cols if c in df_uyarili.columns]
+                                        st.dataframe(df_uyarili[display_cols], use_container_width=True, hide_index=True)
+                                    else:
+                                        st.success("✅ Şüpheli durum tespit edilmedi")
+
+                                    # Tüm değişimleri göster (expander içinde)
+                                    with st.expander(f"📋 Tüm Değişimler ({len(df_karsilastirma)} ürün)"):
+                                        st.dataframe(df_karsilastirma, use_container_width=True, hide_index=True)
+
+                                elif hata:
+                                    st.warning(f"⚠️ {hata}")
+                                else:
+                                    st.info("Karşılaştırılacak değişiklik bulunamadı")
+
+                            except Exception as e:
+                                st.error(f"Karşılaştırma hatası: {str(e)}")
+                    else:
+                        st.info("ℹ️ Bu ilk envanter sayısı. Karşılaştırma için önceki dönem verisi gerekiyor.")
+                        st.caption("Envanter Sayısı = 1 için önceki dönem yok. Envanter Sayısı ≥ 2 olduğunda karşılaştırma yapılabilir.")
+
+                        # İlk dönem verisini kaydet
+                        try:
+                            records = prepare_urun_bazli_kayit(df_surekli)
+                            if records:
+                                inserted, skipped = save_urun_bazli_to_supabase(supabase, records)
+                                if inserted > 0:
+                                    st.success(f"💾 {inserted} ürün kaydedildi (sonraki dönemle karşılaştırma için)")
+                        except Exception as e:
+                            st.warning(f"Kayıt hatası: {str(e)[:50]}")
+                else:
+                    st.warning("⚠️ Envanter Sayısı kolonu bulunamadı")
+            else:
+                st.info("📁 Dönem karşılaştırması için Excel dosyası yüklemeniz gerekiyor")
 
 else:
     if manual_mode == "📁 Dosya Yükle" and uploaded_file is None:
