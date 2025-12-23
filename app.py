@@ -1190,8 +1190,14 @@ if alt_sekme == "📦 Parçalı":
         analysis_mode = "📦 Parçalı"
 else:  # Sürekli
     analysis_mode = "🔄 Sürekli Envanter"
-    if 'uploaded_df' in st.session_state and st.session_state.get('uploaded_type') == 'surekli':
-        st.session_state['df_surekli'] = st.session_state['uploaded_df']
+    # Dosya yüklendiyse df_surekli'ye kaydet
+    if 'uploaded_df' in st.session_state:
+        # Sürekli mi kontrol et
+        if st.session_state.get('uploaded_type') == 'surekli':
+            st.session_state['df_surekli'] = st.session_state['uploaded_df']
+        else:
+            # Parçalı dosya yüklendi ama sürekli sekmesindeyiz - uyarı ver
+            st.warning("⚠️ Yüklenen dosya parçalı envanter. Sürekli envanter dosyası yükleyin.")
 
 
 def analyze_inventory(df):
@@ -4377,8 +4383,13 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
     st.markdown("## 🔄 Sürekli Envanter Analizi")
     st.caption("Et-Tavuk, Ekmek, Meyve/Sebze haftalık envanter takibi")
     
+    # Debug bilgisi
+    has_df_surekli = 'df_surekli' in st.session_state and st.session_state['df_surekli'] is not None
+    has_uploaded_df = 'uploaded_df' in st.session_state
+    uploaded_type = st.session_state.get('uploaded_type', 'yok')
+    
     # Dosya yüklenmişse kullan
-    if 'df_surekli' in st.session_state and st.session_state['df_surekli'] is not None:
+    if has_df_surekli:
         df_surekli = st.session_state['df_surekli']
         magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
         
