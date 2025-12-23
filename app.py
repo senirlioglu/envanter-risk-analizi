@@ -4443,21 +4443,20 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                     """, unsafe_allow_html=True)
                 
                 with col2:
-                    st.markdown("**📋 Risk Detayları:**")
+                    st.markdown("**📋 Risk Detayları:** *(Detay için tıklayın)*")
+                
+                # Expander'lı risk detayları
+                for key, val in risk['detaylar'].items():
+                    status = "🔴" if val['puan'] >= val['max'] * 0.7 else "🟡" if val['puan'] > 0 else "✅"
+                    kriter_adi = key.replace('_', ' ').title()
+                    aciklama = val.get('aciklama', '')
+                    detay_list = val.get('detay', [])
                     
-                    # Detaylı risk tablosu
-                    risk_rows = []
-                    for key, val in risk['detaylar'].items():
-                        status = "🔴" if val['puan'] >= val['max'] * 0.7 else "🟡" if val['puan'] > 0 else "✅"
-                        aciklama = val.get('aciklama', '')
-                        risk_rows.append({
-                            '': status,
-                            'Kriter': key.replace('_', ' ').title(),
-                            'Puan': f"{val['puan']}/{val['max']}",
-                            'Açıklama': aciklama
-                        })
-                    
-                    st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
+                    with st.expander(f"{status} **{kriter_adi}**: {val['puan']}/{val['max']} - {aciklama}"):
+                        if detay_list:
+                            st.dataframe(pd.DataFrame(detay_list), use_container_width=True, hide_index=True)
+                        else:
+                            st.info("Bu kriterde sorun tespit edilmedi")
             
             elif len(magazalar) > 1:
                 st.markdown("---")
