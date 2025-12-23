@@ -4580,5 +4580,8 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                     st.success("✅ Anormal miktar tespit edilmedi")
 
 else:
-    if manual_mode == "📁 Dosya Yükle" and uploaded_file is None:
-        st.info("👆 Excel dosyası yükleyin (Parçalı veya Sürekli - otomatik algılanır)")
+    # Veri yok durumu
+    if uploaded_file is None and alt_sekme == "📦 Parçalı":
+        st.info("👆 Parçalı envanter analizi için Excel dosyası yükleyin")
+    elif uploaded_file is None and alt_sekme == "🔄 Sürekli":
+        st.info("👆 Sürekli envanter analizi için Excel dosyası yükleyin veya Supabase'den veri bekleniyor")
