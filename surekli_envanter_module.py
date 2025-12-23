@@ -1,12 +1,17 @@
 # ==================== SÜREKLİ ENVANTER MODÜLÜ v2 ====================
 # Haftalık envanter analizi: Et-Tavuk, Ekmek, Meyve/Sebze
-# Supabase entegrasyonu ile
+# Supabase + Google Sheets entegrasyonu
 
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import json
 import os
+
+# ==================== GOOGLE SHEETS CONFIG ====================
+# Aynı parçalı envanterdeki gibi iptal verisi için
+SUREKLI_IPTAL_SHEETS_ID = '1F4Th-xZ2n0jDyayy5vayIN2j-EGUzqw5Akd8mXQVh4o'
+SUREKLI_IPTAL_SHEET_NAME = 'IptalVerisi'
 
 # ==================== JSON'DAN VERİ YÜKLEME ====================
 
@@ -857,3 +862,192 @@ def analiz_donem_karsilastirma(supabase_client, df, envanter_tarihi=None):
         return pd.concat(tum_karsilastirmalar, ignore_index=True), None
 
     return None, "Önceki dönem verisi bulunamadı veya karşılaştırılacak değişiklik yok"
+
+
+# ==================== GOOGLE SHEETS İPTAL VERİSİ ====================
+# Parçalı envanterdeki gibi iptal verisi entegrasyonu
+
+def get_surekli_iptal_from_sheets():
+    """
+    Google Sheets'ten sürekli envanter için iptal verisini çeker
+    Aynı parçalı envanterdeki sheets yapısını kullanır
+    """
+    try:
+        csv_url = f'https://docs.google.com/spreadsheets/d/{SUREKLI_IPTAL_SHEETS_ID}/gviz/tq?tqx=out:csv&sheet={SUREKLI_IPTAL_SHEET_NAME}'
+        df = pd.read_csv(csv_url, encoding='utf-8')
+        df.columns = df.columns.str.strip()
+        return df
+    except Exception as e:
+        print(f"Sheets okuma hatası: {e}")
+        return pd.DataFrame()
+
+
+def get_iptal_for_surekli_urunler(magaza_kodu, urun_kodlari, envanter_tarihi=None):
+    """
+    Belirli mağaza ve ürünler için iptal bilgilerini getirir
+
+    Returns:
+        dict: {urun_kodu: [{'tarih': ..., 'saat': ..., 'miktar': ..., 'kasa_no': ...}, ...]}
+    """
+    df_iptal = get_surekli_iptal_from_sheets()
+
+    if df_iptal.empty:
+        return {}
+
+    df_iptal = df_iptal.copy()
+
+    # Kolon isimleri (parçalı envanterdeki gibi)
+    col_magaza = 'Mağaza - Anahtar'
+    col_malzeme = 'Malzeme - Anahtar'
+    col_tarih = 'Tarih - Anahtar'
+    col_saat = 'Fiş Saati'
+    col_miktar = 'Miktar'
+    col_islem_no = 'İşlem Numarası'
+    col_kasa = 'Kasa numarası'
+
+    # Kolon bulunamazsa index ile dene
+    cols = df_iptal.columns.tolist()
+    if col_magaza not in cols and len(cols) > 7:
+        col_magaza = cols[7]
+    if col_malzeme not in cols and len(cols) > 17:
+        col_malzeme = cols[17]
+    if col_tarih not in cols and len(cols) > 3:
+        col_tarih = cols[3]
+    if col_saat not in cols and len(cols) > 31:
+        col_saat = cols[31]
+    if col_islem_no not in cols and len(cols) > 36:
+        col_islem_no = cols[36]
+    if col_kasa not in cols and len(cols) > 20:
+        col_kasa = cols[20]
+
+    # Kod temizleme
+    def clean_code(x):
+        return str(x).strip().replace('.0', '')
+
+    df_iptal[col_magaza] = df_iptal[col_magaza].apply(clean_code)
+    df_iptal[col_malzeme] = df_iptal[col_malzeme].apply(clean_code)
+
+    # Mağaza filtrele
+    magaza_str = clean_code(magaza_kodu)
+    df_mag = df_iptal[df_iptal[col_magaza] == magaza_str]
+
+    if df_mag.empty:
+        return {}
+
+    # Tarih filtresi (son 30 gün)
+    if envanter_tarihi:
+        if isinstance(envanter_tarihi, str):
+            envanter_tarihi = pd.to_datetime(envanter_tarihi)
+        min_tarih = envanter_tarihi - timedelta(days=30)
+
+        try:
+            df_mag[col_tarih] = pd.to_datetime(df_mag[col_tarih], errors='coerce')
+            df_mag = df_mag[df_mag[col_tarih] >= min_tarih]
+        except:
+            pass
+
+    # Ürün kodlarını temizle
+    urun_set = set(clean_code(u) for u in urun_kodlari)
+
+    result = {}
+
+    for _, row in df_mag.iterrows():
+        malzeme = clean_code(row[col_malzeme])
+
+        if malzeme not in urun_set:
+            continue
+
+        tarih = row.get(col_tarih, '')
+        saat = row.get(col_saat, '')
+        miktar = row.get(col_miktar, 0)
+        islem_no = row.get(col_islem_no, '')
+        kasa_no = row.get(col_kasa, '')
+
+        if malzeme not in result:
+            result[malzeme] = []
+
+        result[malzeme].append({
+            'tarih': str(tarih)[:10] if pd.notna(tarih) else '',
+            'saat': str(saat) if pd.notna(saat) else '',
+            'miktar': float(miktar) if pd.notna(miktar) else 0,
+            'islem_no': str(islem_no) if pd.notna(islem_no) else '',
+            'kasa_no': str(kasa_no) if pd.notna(kasa_no) else ''
+        })
+
+    return result
+
+
+def enrich_karsilastirma_with_iptal(df_karsilastirma, magaza_kodu, envanter_tarihi=None):
+    """
+    Dönem karşılaştırma sonuçlarına iptal bilgisi ekler
+
+    Özellikle 'Fire yazmadan açık' durumlarında iptal kaydı var mı kontrol eder
+    """
+    if df_karsilastirma is None or df_karsilastirma.empty:
+        return df_karsilastirma
+
+    df = df_karsilastirma.copy()
+
+    # Ürün kodlarını al
+    urun_kodlari = df['urun_kodu'].unique().tolist()
+
+    # İptal verisi çek
+    iptal_dict = get_iptal_for_surekli_urunler(magaza_kodu, urun_kodlari, envanter_tarihi)
+
+    # İptal bilgisi ekle
+    df['iptal_sayisi'] = 0
+    df['iptal_toplam'] = 0.0
+    df['iptal_detay'] = ''
+    df['kamera_kontrol'] = ''
+
+    for idx, row in df.iterrows():
+        urun_kodu = str(row['urun_kodu'])
+
+        if urun_kodu in iptal_dict:
+            iptaller = iptal_dict[urun_kodu]
+            df.at[idx, 'iptal_sayisi'] = len(iptaller)
+            df.at[idx, 'iptal_toplam'] = sum(i['miktar'] for i in iptaller)
+
+            # Detay string
+            detaylar = []
+            for i in iptaller[:3]:  # Max 3 iptal göster
+                detaylar.append(f"{i['tarih']} {i['saat']} ({i['miktar']} adet) Kasa:{i['kasa_no']}")
+            df.at[idx, 'iptal_detay'] = ' | '.join(detaylar)
+
+            # Kamera kontrol önerisi
+            if row.get('uyari', ''):
+                df.at[idx, 'kamera_kontrol'] = f"📹 {len(iptaller)} iptal - Kamera kontrol!"
+
+    return df
+
+
+def analiz_donem_karsilastirma_with_sheets(supabase_client, df, envanter_tarihi=None):
+    """
+    Dönem karşılaştırma + Sheets iptal entegrasyonu
+
+    1. Supabase'e kaydet
+    2. Önceki dönemle karşılaştır
+    3. Sheets'ten iptal verisi çek ve eşleştir
+    """
+    # Önce normal karşılaştırmayı yap
+    df_karsilastirma, hata = analiz_donem_karsilastirma(supabase_client, df, envanter_tarihi)
+
+    if df_karsilastirma is None:
+        return None, hata
+
+    # Tarih bul
+    if envanter_tarihi is None:
+        envanter_tarihi = pd.to_datetime(df['Envanter Tarihi']).max() if 'Envanter Tarihi' in df.columns else datetime.now()
+
+    # Her mağaza için iptal verisi ile zenginleştir
+    enriched_dfs = []
+
+    for magaza_kodu in df_karsilastirma['magaza_kodu'].unique():
+        df_mag = df_karsilastirma[df_karsilastirma['magaza_kodu'] == magaza_kodu].copy()
+        df_enriched = enrich_karsilastirma_with_iptal(df_mag, magaza_kodu, envanter_tarihi)
+        enriched_dfs.append(df_enriched)
+
+    if enriched_dfs:
+        return pd.concat(enriched_dfs, ignore_index=True), None
+
+    return df_karsilastirma, None
