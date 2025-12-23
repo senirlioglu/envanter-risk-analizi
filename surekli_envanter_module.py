@@ -425,7 +425,108 @@ def analiz_iptal_artis(df, df_onceki=None):
                 'Şimdiki İptal': f"{iptal_simdi:,.0f} TL",
                 'Yeni İptal': f"+{iptal_degisim:,.0f} TL"
             })
-    
+
+    return sonuclar
+
+
+def analiz_ic_hirsizlik_surekli(df, df_onceki=None):
+    """
+    İÇ HIRSIZLIK TESPİTİ (Sürekli Envanter için - Parçalı mantığıyla)
+
+    Kural: |Fark Değişim| ≈ İptal Değişim
+    - Açık arttı (fark_degisim < 0)
+    - İptal arttı (iptal_degisim > 0)
+    - |fark_degisim| ≈ iptal_degisim → Satırı iptal edip çalmış olabilir!
+
+    Risk seviyeleri (fark ne kadar yakınsa o kadar riskli):
+    - TAM EŞİT → ÇOK YÜKSEK
+    - ±2 birim → YÜKSEK
+    - ±5 birim → ORTA
+    - ±10 birim → DÜŞÜK-ORTA
+    """
+    sonuclar = []
+
+    if df_onceki is None or df_onceki.empty:
+        return sonuclar
+
+    magaza_adi_col = get_magaza_adi_col(df)
+
+    for _, row in df.iterrows():
+        malzeme_kodu = str(row.get('Malzeme Kodu', row.get('Mal Kodu', '')))
+        env_sayisi = int(row.get('Envanter Sayisi', row.get('Envanter Sayısı', 1)) or 1)
+
+        if env_sayisi <= 1:
+            continue
+
+        # Önceki kaydı bul
+        onceki = df_onceki[
+            (df_onceki['malzeme_kodu'].astype(str) == malzeme_kodu) &
+            (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+        ]
+
+        if onceki.empty:
+            continue
+
+        onceki = onceki.iloc[0]
+
+        # Miktar bazlı değişimler (tutardan daha güvenilir)
+        fark_simdi = float(row.get('Fark Miktarı', 0) or 0)
+        fark_onceki = float(onceki.get('fark_miktari', 0) or 0)
+        iptal_simdi = abs(float(row.get('İptal Satır Miktarı', 0) or 0))
+        iptal_onceki = abs(float(onceki.get('iptal_satir_miktari', 0) or 0))
+
+        # Tutarlar
+        fark_tutar_simdi = float(row.get('Fark Tutarı', 0) or 0)
+        fark_tutar_onceki = float(onceki.get('fark_tutari', 0) or 0)
+
+        # Değişimler
+        fark_degisim = fark_simdi - fark_onceki  # Negatif = daha fazla açık
+        iptal_degisim = iptal_simdi - iptal_onceki  # Pozitif = daha fazla iptal
+        tutar_degisim = fark_tutar_simdi - fark_tutar_onceki
+
+        # Kural: Açık arttı VE iptal arttı
+        if fark_degisim >= 0 or iptal_degisim <= 0:
+            continue
+
+        # |Fark değişim| ile iptal değişim karşılaştır
+        fark_mutlak = abs(abs(fark_degisim) - iptal_degisim)
+
+        # Risk seviyesi belirle
+        if fark_mutlak == 0:
+            risk = "ÇOK YÜKSEK"
+            esitlik = "TAM EŞİT"
+        elif fark_mutlak <= 2:
+            risk = "YÜKSEK"
+            esitlik = "YAKIN (±2)"
+        elif fark_mutlak <= 5:
+            risk = "ORTA"
+            esitlik = "YAKIN (±5)"
+        elif fark_mutlak <= 10:
+            risk = "DÜŞÜK-ORTA"
+            esitlik = f"FARK: {fark_mutlak:.1f}"
+        else:
+            continue  # Fark çok büyük, iç hırsızlık olma ihtimali düşük
+
+        sonuclar.append({
+            'Mağaza Kodu': str(row.get('Mağaza Kodu', '')),
+            'Mağaza Adı': str(row.get(magaza_adi_col, ''))[:30] if magaza_adi_col else '',
+            'Malzeme Kodu': malzeme_kodu,
+            'Ürün': str(row.get('Malzeme Tanımı', row.get('Mal Tanım', '')))[:30],
+            'Kategori': str(row.get('Depolama Koşulu', '')),
+            'Env.Sayısı': f"{env_sayisi-1} → {env_sayisi}",
+            'Fark Değişim': f"{fark_degisim:+.1f} adet",
+            'İptal Değişim': f"+{iptal_degisim:.1f} adet",
+            'Tutar Değişim': f"{tutar_degisim:,.0f} TL",
+            'Durum': esitlik,
+            'Risk': risk,
+            'Kamera': '📹 KONTROL ET!'
+        })
+
+    if sonuclar:
+        # Risk sırasına göre sırala
+        risk_order = {'ÇOK YÜKSEK': 0, 'YÜKSEK': 1, 'ORTA': 2, 'DÜŞÜK-ORTA': 3}
+        sonuclar = sorted(sonuclar, key=lambda x: (risk_order.get(x['Risk'], 99), x['Tutar Değişim']))
+
     return sonuclar
 
 def analiz_yuvarlak_sayi(df):
@@ -1103,7 +1204,16 @@ def enrich_with_iptal(df_karsilastirma, magaza_kodu, envanter_tarihi=None):
 
 def analiz_donem_karsilastirma_with_sheets(supabase_client, df, envanter_tarihi=None):
     """
-    v3 için dönem karşılaştırma + Sheets entegrasyonu
+    v3 için dönem karşılaştırma + Sheets entegrasyonu + İç Hırsızlık Tespiti
+
+    Returns:
+        tuple: (sonuclar_dict, hata_mesaji)
+        sonuclar_dict = {
+            'fire_yazmama': DataFrame,
+            'ic_hirsizlik': DataFrame,
+            'iptal_artis': DataFrame,
+            'kronik_acik': DataFrame
+        }
     """
     # Mağaza kodunu al
     magaza_kodu = str(df['Mağaza Kodu'].iloc[0]) if 'Mağaza Kodu' in df.columns else ''
@@ -1122,18 +1232,38 @@ def analiz_donem_karsilastirma_with_sheets(supabase_client, df, envanter_tarihi=
     # 2. Önceki veriyi çek
     df_onceki = get_magaza_onceki_kayitlar(supabase_client, magaza_kodu, envanter_donemi)
 
-    # 3. Fire yazmama analizi
-    fire_yazmama = analiz_fire_yazmama(df, df_onceki)
+    # 3. Tüm analizleri yap
+    sonuclar = {}
 
-    if not fire_yazmama:
+    # Fire yazmama analizi
+    fire_yazmama = analiz_fire_yazmama(df, df_onceki)
+    if fire_yazmama:
+        df_fire = pd.DataFrame(fire_yazmama)
+        df_fire = enrich_with_iptal(df_fire, magaza_kodu, envanter_tarihi)
+        sonuclar['fire_yazmama'] = df_fire
+
+    # İÇ HIRSIZLIK ANALİZİ (Parçalı envanterdeki gibi)
+    ic_hirsizlik = analiz_ic_hirsizlik_surekli(df, df_onceki)
+    if ic_hirsizlik:
+        df_ic = pd.DataFrame(ic_hirsizlik)
+        # Sheets iptal verisiyle zenginleştir
+        df_ic = enrich_with_iptal(df_ic, magaza_kodu, envanter_tarihi)
+        sonuclar['ic_hirsizlik'] = df_ic
+
+    # İptal artış analizi
+    iptal_artis = analiz_iptal_artis(df, df_onceki)
+    if iptal_artis:
+        sonuclar['iptal_artis'] = pd.DataFrame(iptal_artis)
+
+    # Kronik açık analizi
+    kronik_acik = analiz_kronik_acik(df, df_onceki)
+    if kronik_acik:
+        sonuclar['kronik_acik'] = pd.DataFrame(kronik_acik)
+
+    if not sonuclar:
         return None, "Karşılaştırılacak değişiklik bulunamadı"
 
-    df_sonuc = pd.DataFrame(fire_yazmama)
-
-    # 4. Sheets iptal verisi ile zenginleştir
-    df_enriched = enrich_with_iptal(df_sonuc, magaza_kodu, envanter_tarihi)
-
-    return df_enriched, None
+    return sonuclar, None
 
 
 # Geriye uyumluluk - eski fonksiyon isimleri

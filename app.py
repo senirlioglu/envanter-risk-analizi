@@ -31,7 +31,9 @@ try:
         detect_yuvarlak_sayi, detect_anormal_miktar,
         # Google Sheets iptal entegrasyonu (dönem karşılaştırma)
         analiz_donem_karsilastirma_with_sheets, get_iptal_for_surekli_urunler,
-        prepare_urun_bazli_kayit, save_urun_bazli_to_supabase
+        prepare_urun_bazli_kayit, save_urun_bazli_to_supabase,
+        # İç hırsızlık analizi (parçalı envanter kuralları)
+        analiz_ic_hirsizlik_surekli
     )
     SUREKLI_MODULE_LOADED = True
 except ImportError as e:
@@ -4621,7 +4623,7 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
 
         with surekli_tabs[5]:  # DÖNEM KARŞILAŞTIRMA
             st.subheader("📅 Dönem Karşılaştırma")
-            st.caption("Envanter sayıları arasındaki fark değişimlerini analiz eder + Google Sheets iptal entegrasyonu")
+            st.caption("Parçalı envanterdeki iç hırsızlık kurallarıyla: |Fark Değişim| ≈ İptal Değişim")
 
             # Sadece dosya yüklendiyse çalışır
             if veri_kaynagi == "dosya":
@@ -4637,58 +4639,68 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                     st.info(f"📊 **Mevcut Envanter Sayısı:** {current_envanter_sayisi}")
 
                     if current_envanter_sayisi > 1:
-                        # Ürün bazlı kaydet ve karşılaştır (Sheets iptal verisi ile)
-                        with st.spinner("Dönemler karşılaştırılıyor + Sheets iptal verisi çekiliyor..."):
+                        # Ürün bazlı kaydet ve karşılaştır
+                        with st.spinner("Dönemler karşılaştırılıyor + İç hırsızlık analizi yapılıyor..."):
                             try:
-                                # Sheets entegrasyonlu karşılaştırma
-                                df_karsilastirma, hata = analiz_donem_karsilastirma_with_sheets(supabase, df_surekli)
+                                # Tüm analizleri yap
+                                sonuclar, hata = analiz_donem_karsilastirma_with_sheets(supabase, df_surekli)
 
-                                if df_karsilastirma is not None and len(df_karsilastirma) > 0:
-                                    # Uyarılı olanları ayır
-                                    df_uyarili = df_karsilastirma[df_karsilastirma['uyari'] != '']
+                                if sonuclar:
+                                    # Özet metrikler
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    with col1:
+                                        ic_hrs_count = len(sonuclar.get('ic_hirsizlik', pd.DataFrame()))
+                                        st.metric("🔴 İÇ HIRSIZLIK", ic_hrs_count, help="|Fark| ≈ İptal")
+                                    with col2:
+                                        fire_count = len(sonuclar.get('fire_yazmama', pd.DataFrame()))
+                                        st.metric("🚨 Fire Yazmama", fire_count)
+                                    with col3:
+                                        iptal_count = len(sonuclar.get('iptal_artis', pd.DataFrame()))
+                                        st.metric("⚠️ İptal Artışı", iptal_count)
+                                    with col4:
+                                        kronik_count = len(sonuclar.get('kronik_acik', pd.DataFrame()))
+                                        st.metric("📈 Kronik Açık", kronik_count)
 
-                                    if len(df_uyarili) > 0:
-                                        st.error(f"🚨 **{len(df_uyarili)} üründe şüpheli durum tespit edildi!**")
+                                    # İÇ HIRSIZLIK TABLOSU (En önemli!)
+                                    if 'ic_hirsizlik' in sonuclar and len(sonuclar['ic_hirsizlik']) > 0:
+                                        st.markdown("---")
+                                        st.markdown("### 🔴 İÇ HIRSIZLIK TESPİTİ")
+                                        st.caption("Kural: |Fark Değişim| ≈ İptal Değişim → Satırı iptal edip çalmış olabilir!")
 
-                                        # Uyarı tiplerine göre gruplama
-                                        col1, col2, col3, col4 = st.columns(4)
-                                        with col1:
-                                            fire_yok = len(df_uyarili[df_uyarili['uyari'].str.contains('Fire yazmadan', na=False)])
-                                            st.metric("🚨 Fire Yazmadan Açık", fire_yok)
-                                        with col2:
-                                            iptal_artis = len(df_uyarili[df_uyarili['uyari'].str.contains('İptal artışı', na=False)])
-                                            st.metric("⚠️ İptal Artışı", iptal_artis)
-                                        with col3:
-                                            fark_kotulesti = len(df_uyarili[df_uyarili['uyari'].str.contains('kötüleşti', na=False)])
-                                            st.metric("📈 Fark Kötüleşti", fark_kotulesti)
-                                        with col4:
-                                            # Kamera kontrol gereken sayısı
-                                            kamera_sayisi = len(df_uyarili[df_uyarili['kamera_kontrol'] != '']) if 'kamera_kontrol' in df_uyarili.columns else 0
-                                            st.metric("📹 Kamera Kontrol", kamera_sayisi)
+                                        df_ic = sonuclar['ic_hirsizlik']
+                                        display_cols = ['Mağaza Kodu', 'Malzeme Kodu', 'Ürün', 'Kategori',
+                                                       'Env.Sayısı', 'Fark Değişim', 'İptal Değişim',
+                                                       'Tutar Değişim', 'Durum', 'Risk', 'Kamera']
+                                        display_cols = [c for c in display_cols if c in df_ic.columns]
+                                        st.dataframe(df_ic[display_cols], use_container_width=True, hide_index=True)
 
-                                        st.markdown("### 🚨 Şüpheli Ürünler + İptal Bilgisi")
-                                        display_cols = ['magaza_kodu', 'urun_kodu', 'urun_adi', 'kategori',
-                                                       'onceki_fark', 'simdiki_fark', 'fark_degisim',
-                                                       'onceki_fire', 'simdiki_fire', 'fire_degisim',
-                                                       'iptal_sayisi', 'kamera_kontrol', 'uyari']
-                                        display_cols = [c for c in display_cols if c in df_uyarili.columns]
-                                        st.dataframe(df_uyarili[display_cols], use_container_width=True, hide_index=True)
-
-                                        # İptal detayları (expander)
-                                        if 'iptal_detay' in df_uyarili.columns:
-                                            df_iptal_var = df_uyarili[df_uyarili['iptal_sayisi'] > 0]
+                                        # Sheets iptal detayları
+                                        if 'iptal_detay' in df_ic.columns:
+                                            df_iptal_var = df_ic[df_ic['iptal_sayisi'] > 0] if 'iptal_sayisi' in df_ic.columns else pd.DataFrame()
                                             if len(df_iptal_var) > 0:
-                                                with st.expander(f"📹 İptal Detayları ({len(df_iptal_var)} ürün)"):
+                                                with st.expander(f"📹 Kamera Kontrol Detayları ({len(df_iptal_var)} ürün)"):
                                                     for _, row in df_iptal_var.iterrows():
-                                                        st.markdown(f"**{row['urun_kodu']} - {row['urun_adi']}**")
-                                                        st.caption(row['iptal_detay'])
+                                                        st.markdown(f"**{row.get('Malzeme Kodu', '')} - {row.get('Ürün', '')}** | Risk: {row.get('Risk', '')}")
+                                                        st.caption(f"Sheets iptal: {row.get('iptal_detay', 'Yok')}")
                                                         st.markdown("---")
-                                    else:
-                                        st.success("✅ Şüpheli durum tespit edilmedi")
 
-                                    # Tüm değişimleri göster (expander içinde)
-                                    with st.expander(f"📋 Tüm Değişimler ({len(df_karsilastirma)} ürün)"):
-                                        st.dataframe(df_karsilastirma, use_container_width=True, hide_index=True)
+                                    # Fire yazmama
+                                    if 'fire_yazmama' in sonuclar and len(sonuclar['fire_yazmama']) > 0:
+                                        with st.expander(f"🚨 Fire Yazmadan Açık ({len(sonuclar['fire_yazmama'])} ürün)"):
+                                            st.dataframe(sonuclar['fire_yazmama'], use_container_width=True, hide_index=True)
+
+                                    # İptal artışı
+                                    if 'iptal_artis' in sonuclar and len(sonuclar['iptal_artis']) > 0:
+                                        with st.expander(f"⚠️ İptal Artışı ({len(sonuclar['iptal_artis'])} ürün)"):
+                                            st.dataframe(sonuclar['iptal_artis'], use_container_width=True, hide_index=True)
+
+                                    # Kronik açık
+                                    if 'kronik_acik' in sonuclar and len(sonuclar['kronik_acik']) > 0:
+                                        with st.expander(f"📈 Kronik Açık ({len(sonuclar['kronik_acik'])} ürün)"):
+                                            st.dataframe(sonuclar['kronik_acik'], use_container_width=True, hide_index=True)
+
+                                    if ic_hrs_count == 0 and fire_count == 0:
+                                        st.success("✅ Şüpheli durum tespit edilmedi")
 
                                 elif hata:
                                     st.warning(f"⚠️ {hata}")
