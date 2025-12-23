@@ -1,10 +1,11 @@
-# ==================== SÜREKLİ ENVANTER MODÜLÜ v2 ====================
+# ==================== SÜREKLİ ENVANTER MODÜLÜ v3 ====================
 # Haftalık envanter analizi: Et-Tavuk, Ekmek, Meyve/Sebze
-# Supabase entegrasyonu ile
+# Yeni mantık: Envanter Sayısı bazlı kümülatif takip
+# Supabase: surekli_envanter_detay tablosu
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 
@@ -39,10 +40,15 @@ SEGMENT_MAPPING = {
     'C': ['C', 'LABC', 'LABCD'],
     'D': ['D', 'LABCD']
 }
-YUKSEK_MIKTAR_ISTISNALAR = ['PATATES', 'SOĞAN', 'SOGAN']
-MIN_SATIS_HASILATI = 500
 
-# Risk puan ağırlıkları (toplam 97)
+# Kategori tespiti için keyword'ler
+KATEGORI_KEYWORDS = {
+    'Et-Tavuk': ['ET VE ET ÜRÜNLERİ', 'TAVUK', 'PİLİÇ', 'KIYMA', 'KÖFTE', 'SUCUK', 'SALAM'],
+    'Ekmek': ['UN VE UNLU MAMULLER', 'EKMEK', 'LAVAŞ', 'BAZLAMA', 'PİDE', 'SIMIT'],
+    'Meyve/Sebze': ['MEYVE', 'SEBZE', 'YAŞ MEYVE', 'YAŞ SEBZE']
+}
+
+# Risk puan ağırlıkları (toplam 97) - ESKİ KRİTERLER
 RISK_WEIGHTS = {
     'bolge_sapma': 20,
     'satir_iptali': 12,
@@ -56,673 +62,899 @@ RISK_WEIGHTS = {
     'yuvarlak_sayi': 8
 }
 
-# ==================== TEMEL FONKSİYONLAR ====================
-
-def detect_envanter_type(df):
-    """Sürekli mi parçalı mı algılar"""
-    if 'Depolama Koşulu Grubu' in df.columns:
-        if df['Depolama Koşulu Grubu'].astype(str).str.contains('Sürekli', case=False, na=False).any():
-            return 'surekli'
-    if 'Önceki Fark Miktarı' in df.columns:
-        return 'parcali'
-    if 'Depolama Koşulu' in df.columns:
-        kosullar = set(df['Depolama Koşulu'].dropna().unique())
-        surekli_kosullar = {'Et-Tavuk', 'Ekmek', 'Meyve/Sebz'}
-        if kosullar.issubset(surekli_kosullar) or kosullar & surekli_kosullar:
-            return 'surekli'
-    return 'parcali'
-
-def get_magaza_adi_col(df):
-    """Mağaza adı kolonunu bul"""
-    for col in ['Mağaza Adı', 'Mağaza Tanım']:
-        if col in df.columns:
-            return col
-    return None
-
-def hesapla_kategori_ozet(df):
-    """Kategori bazlı özet hesaplar"""
-    kategori_col = 'Depolama Koşulu' if 'Depolama Koşulu' in df.columns else None
-    if kategori_col is None:
-        return {}
-    
-    sonuc = {}
-    for kategori in df[kategori_col].unique():
-        df_kat = df[df[kategori_col] == kategori]
-        fark = df_kat['Fark Tutarı'].sum() if 'Fark Tutarı' in df_kat.columns else 0
-        fire = df_kat['Fire Tutarı'].sum() if 'Fire Tutarı' in df_kat.columns else 0
-        satis = df_kat['Satış Hasılatı'].sum() if 'Satış Hasılatı' in df_kat.columns else 0
-        toplam_kayip = abs(fark) + abs(fire)
-        oran = (toplam_kayip / satis * 100) if satis > 0 else 0
-        sonuc[kategori] = {
-            'fark': fark, 'fire': fire, 'satis': satis, 
-            'oran': oran, 'urun_sayisi': len(df_kat), 'toplam_kayip': toplam_kayip
-        }
-    return sonuc
-
-# ==================== SM/BS FONKSİYONLARI ====================
-
-def get_sm_list():
-    return list(set(v['sm'] for v in SM_BS_MAGAZA.values())) if SM_BS_MAGAZA else []
-
-def get_bs_list():
-    return list(set(v['bs'] for v in SM_BS_MAGAZA.values())) if SM_BS_MAGAZA else []
-
-def get_sm_magaza_sayisi():
-    sm_counts = {}
-    for bilgi in SM_BS_MAGAZA.values():
-        sm_counts[bilgi['sm']] = sm_counts.get(bilgi['sm'], 0) + 1
-    return sm_counts
-
-def get_bs_magaza_sayisi():
-    bs_counts = {}
-    for bilgi in SM_BS_MAGAZA.values():
-        bs_counts[bilgi['bs']] = bs_counts.get(bilgi['bs'], 0) + 1
-    return bs_counts
-
-def get_magazalar_by_sm(sm):
-    return {k: v for k, v in SM_BS_MAGAZA.items() if v['sm'] == sm}
-
-def get_magazalar_by_bs(bs):
-    return {k: v for k, v in SM_BS_MAGAZA.items() if v['bs'] == bs}
+# ==================== YARDIMCI FONKSİYONLAR ====================
 
 def get_magaza_bilgi(magaza_kodu):
-    return SM_BS_MAGAZA.get(str(magaza_kodu), {'sm': 'Bilinmiyor', 'bs': 'Bilinmiyor'})
+    """Mağaza SM/BS bilgisini döner"""
+    magaza_kodu = str(magaza_kodu)
+    if magaza_kodu in SM_BS_MAGAZA:
+        return SM_BS_MAGAZA[magaza_kodu]
+    return {'sm': 'BİLİNMİYOR', 'bs': 'BİLİNMİYOR'}
 
-# ==================== MANİPÜLASYON TESPİT ====================
+def get_sm_list():
+    """Tüm SM listesini döner"""
+    return list(set(v['sm'] for v in SM_BS_MAGAZA.values()))
 
-def detect_yuvarlak_sayi(df):
-    """Yuvarlak sayı girişlerini tespit eder"""
-    kontrol_kategoriler = ['Meyve/Sebz', 'Et-Tavuk']
-    df_filtered = df[df['Depolama Koşulu'].isin(kontrol_kategoriler)] if 'Depolama Koşulu' in df.columns else df
-    
-    if 'Sayım Miktarı' not in df.columns:
-        return pd.DataFrame()
-    
-    yuvarlak = []
-    for _, row in df_filtered.iterrows():
-        miktar = row['Sayım Miktarı']
-        if pd.notna(miktar) and miktar > 5 and miktar == int(miktar) and int(miktar) % 5 == 0:
-            yuvarlak.append(row)
-    return pd.DataFrame(yuvarlak)
+def get_bs_list():
+    """Tüm BS listesini döner"""
+    return list(set(v['bs'] for v in SM_BS_MAGAZA.values()))
 
-def detect_anormal_miktar(df):
-    """Anormal yüksek miktarları tespit eder"""
-    if 'Sayım Miktarı' not in df.columns:
-        return pd.DataFrame()
+def get_magazalar_by_sm(sm):
+    """Bir SM'e bağlı mağazaları döner"""
+    return [k for k, v in SM_BS_MAGAZA.items() if v['sm'] == sm]
+
+def get_magazalar_by_bs(bs):
+    """Bir BS'e bağlı mağazaları döner"""
+    return [k for k, v in SM_BS_MAGAZA.items() if v['bs'] == bs]
+
+def get_magaza_adi_col(df):
+    """DataFrame'deki mağaza adı kolonunu bul"""
+    if 'Mağaza Adı' in df.columns:
+        return 'Mağaza Adı'
+    elif 'Mağaza Tanım' in df.columns:
+        return 'Mağaza Tanım'
+    return None
+
+def detect_kategori(row):
+    """Satırdan kategori tespit et"""
+    text = ' '.join([
+        str(row.get('Ürün Grubu Tanımı', '')),
+        str(row.get('Mal Grubu Tanımı', '')),
+        str(row.get('Malzeme Tanımı', ''))
+    ]).upper()
     
-    anormal = []
+    for kategori, keywords in KATEGORI_KEYWORDS.items():
+        for kw in keywords:
+            if kw in text:
+                return kategori
+    return 'Diğer'
+
+# ==================== ENVANTER TİPİ TESPİTİ ====================
+
+def detect_envanter_type(df):
+    """Dosyanın sürekli mi parçalı mı olduğunu tespit et"""
+    cols_lower = [c.lower() for c in df.columns]
+    
+    # Sürekli envanter belirteçleri
+    surekli_indicators = ['envanter sayisi', 'envanter sayısı', 'depolama koşulu']
+    for ind in surekli_indicators:
+        if any(ind in c for c in cols_lower):
+            return 'surekli'
+    
+    # Depolama koşulu değerleri kontrolü
+    if 'Depolama Koşulu Grubu' in df.columns or 'Depolama Koşulu' in df.columns:
+        return 'surekli'
+    
+    return 'parcali'
+
+# ==================== SUPABASE KAYIT FONKSİYONLARI ====================
+
+def prepare_detay_kayitlar(df):
+    """
+    DataFrame'den Supabase'e kaydedilecek detay kayıtlarını hazırla
+    Her satır = 1 ürün kaydı
+    """
+    records = []
+    magaza_adi_col = get_magaza_adi_col(df)
+    
+    # Envanter dönemi
+    if 'Envanter Dönemi' in df.columns:
+        envanter_donemi = str(df['Envanter Dönemi'].iloc[0])
+    else:
+        envanter_donemi = datetime.now().strftime('%Y%m')
+    
     for _, row in df.iterrows():
-        miktar = row['Sayım Miktarı']
-        tanim = str(row.get('Malzeme Tanımı', '')).upper()
-        istisna = any(ist in tanim for ist in YUKSEK_MIKTAR_ISTISNALAR)
-        if pd.notna(miktar) and miktar > 50 and not istisna:
-            anormal.append(row)
-    return pd.DataFrame(anormal)
-
-def detect_fire_manipulasyon(df):
-    """Fire manipülasyonu tespit eder"""
-    if 'Fire Tutarı' not in df.columns or 'Fark Tutarı' not in df.columns:
-        return pd.DataFrame()
-    
-    df_check = df.copy()
-    df_check['Fire'] = df_check['Fire Tutarı'].fillna(0)
-    df_check['Fark'] = df_check['Fark Tutarı'].fillna(0)
-    return df_check[(df_check['Fire'] < 0) & (df_check['Fark'] + df_check['Fire'] > 0)]
-
-def get_sayilmasi_gereken_urunler(magaza_kodu, segment='C', blokajli=None):
-    """Sayılması gereken ürünleri döner"""
-    gecerli_tipler = SEGMENT_MAPPING.get(segment, ['LABCD'])
-    sayilmasi_gereken = []
-    
-    for kod, bilgi in SEGMENT_URUN.items():
-        if bilgi['tip'] not in gecerli_tipler:
+        magaza_kodu = str(row.get('Mağaza Kodu', ''))
+        if not magaza_kodu:
             continue
-        if bilgi['nitelik'] in HARIC_NITELIKLER:
-            continue
-        sayilmasi_gereken.append(kod)
+            
+        magaza_bilgi = get_magaza_bilgi(magaza_kodu)
+        kategori = detect_kategori(row)
+        
+        # Envanter sayısı
+        env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+        
+        record = {
+            'magaza_kodu': magaza_kodu,
+            'magaza_adi': str(row.get(magaza_adi_col, '')) if magaza_adi_col else '',
+            'sm': magaza_bilgi['sm'],
+            'bs': magaza_bilgi['bs'],
+            'malzeme_kodu': str(row.get('Malzeme Kodu', '')),
+            'malzeme_tanimi': str(row.get('Malzeme Tanımı', ''))[:100],
+            'kategori': kategori,
+            'envanter_donemi': envanter_donemi,
+            'envanter_sayisi': env_sayisi,
+            'fark_miktari': float(row.get('Fark Miktarı', 0) or 0),
+            'fark_tutari': float(row.get('Fark Tutarı', 0) or 0),
+            'fire_miktari': float(row.get('Fire Miktarı', 0) or 0),
+            'fire_tutari': float(row.get('Fire Tutarı', 0) or 0),
+            'iptal_satir_tutari': float(row.get('İptal Satır Tutarı', 0) or 0),
+            'sayim_miktari': float(row.get('Sayım Miktarı', 0) or 0),
+            'satis_hasilati': float(row.get('Satış Hasılatı', 0) or 0),
+        }
+        records.append(record)
     
-    if blokajli and str(magaza_kodu) in blokajli:
-        blokajlilar = set(str(b) for b in blokajli[str(magaza_kodu)])
-        sayilmasi_gereken = [u for u in sayilmasi_gereken if u not in blokajlilar]
-    
-    return sayilmasi_gereken
+    return records
 
-def detect_sayilmayan_urunler(df, magaza_kodu, blokajli=None):
-    """Sayılmayan ürünleri tespit eder"""
-    sayilmasi_gereken = get_sayilmasi_gereken_urunler(magaza_kodu, blokajli=blokajli)
-    sayilan = set(str(k) for k in df['Malzeme Kodu'].unique()) if 'Malzeme Kodu' in df.columns else set()
+def save_detay_to_supabase(supabase_client, records):
+    """Detay kayıtlarını Supabase'e kaydet (upsert)"""
+    if not records:
+        return 0, 0
     
-    sayilmayan = []
-    for kod in sayilmasi_gereken:
-        if kod not in sayilan:
-            urun_bilgi = SEGMENT_URUN.get(kod, {})
-            sayilmayan.append({
-                'Malzeme Kodu': kod,
-                'Malzeme Tanımı': urun_bilgi.get('tanim', kod),
-                'Segment': urun_bilgi.get('tip', ''),
-                'Fiyat': urun_bilgi.get('fiyat', 0)
+    inserted = 0
+    skipped = 0
+    
+    # Batch upsert
+    try:
+        result = supabase_client.table('surekli_envanter_detay').upsert(
+            records,
+            on_conflict='magaza_kodu,malzeme_kodu,envanter_donemi,envanter_sayisi'
+        ).execute()
+        inserted = len(result.data) if result.data else 0
+    except Exception as e:
+        print(f"Supabase hata: {e}")
+        # Tek tek dene
+        for rec in records:
+            try:
+                supabase_client.table('surekli_envanter_detay').upsert(
+                    rec,
+                    on_conflict='magaza_kodu,malzeme_kodu,envanter_donemi,envanter_sayisi'
+                ).execute()
+                inserted += 1
+            except:
+                skipped += 1
+    
+    return inserted, skipped
+
+def get_onceki_envanter(supabase_client, magaza_kodu, malzeme_kodu, envanter_donemi, envanter_sayisi):
+    """Bir önceki envanter sayısındaki kaydı getir"""
+    if envanter_sayisi <= 1:
+        return None
+    
+    try:
+        result = supabase_client.table('surekli_envanter_detay').select('*').eq(
+            'magaza_kodu', magaza_kodu
+        ).eq(
+            'malzeme_kodu', malzeme_kodu
+        ).eq(
+            'envanter_donemi', envanter_donemi
+        ).eq(
+            'envanter_sayisi', envanter_sayisi - 1
+        ).execute()
+        
+        if result.data:
+            return result.data[0]
+    except:
+        pass
+    return None
+
+def get_magaza_onceki_kayitlar(supabase_client, magaza_kodu, envanter_donemi):
+    """Mağazanın bu dönemdeki tüm önceki kayıtlarını getir"""
+    try:
+        result = supabase_client.table('surekli_envanter_detay').select('*').eq(
+            'magaza_kodu', magaza_kodu
+        ).eq(
+            'envanter_donemi', envanter_donemi
+        ).execute()
+        
+        if result.data:
+            return pd.DataFrame(result.data)
+    except:
+        pass
+    return pd.DataFrame()
+
+# ==================== ANALİZ FONKSİYONLARI ====================
+
+def analiz_fire_yazmama(df, df_onceki=None):
+    """
+    Fire yazmadan açık verenleri tespit et
+    Envanter sayısı artmış + Fark artmış + Fire artmamış = 🚨
+    """
+    sonuclar = []
+    
+    if df_onceki is None or df_onceki.empty:
+        # Önceki veri yok, sadece mevcut durumu raporla
+        return sonuclar
+    
+    magaza_adi_col = get_magaza_adi_col(df)
+    
+    for _, row in df.iterrows():
+        malzeme_kodu = str(row.get('Malzeme Kodu', ''))
+        env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+        
+        if env_sayisi <= 1:
+            continue
+        
+        # Önceki kaydı bul
+        onceki = df_onceki[
+            (df_onceki['malzeme_kodu'] == malzeme_kodu) & 
+            (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+        ]
+        
+        if onceki.empty:
+            continue
+        
+        onceki = onceki.iloc[0]
+        
+        # Değişimleri hesapla
+        fark_simdi = float(row.get('Fark Tutarı', 0) or 0)
+        fark_onceki = float(onceki.get('fark_tutari', 0) or 0)
+        fire_simdi = float(row.get('Fire Tutarı', 0) or 0)
+        fire_onceki = float(onceki.get('fire_tutari', 0) or 0)
+        
+        fark_degisim = fark_simdi - fark_onceki  # Negatif = daha fazla açık
+        fire_degisim = fire_simdi - fire_onceki  # Negatif = daha fazla fire
+        
+        # Fire yazmama: Fark arttı (daha negatif) ama fire artmadı
+        if fark_degisim < -50 and fire_degisim >= -10:  # 50 TL'den fazla yeni açık, 10 TL'den az fire
+            sonuclar.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Env.Sayısı': f"{env_sayisi-1} → {env_sayisi}",
+                'Fark Değişim': f"{fark_degisim:,.0f} TL",
+                'Fire Değişim': f"{fire_degisim:,.0f} TL",
+                'Durum': '🚨 Fire yazmadan açık!'
             })
-    return sayilmayan
+    
+    return sonuclar
+
+def analiz_kronik_acik(df, df_onceki=None):
+    """Her sayımda açık artan ürünleri tespit et"""
+    sonuclar = []
+    
+    if df_onceki is None or df_onceki.empty:
+        return sonuclar
+    
+    magaza_adi_col = get_magaza_adi_col(df)
+    
+    for _, row in df.iterrows():
+        malzeme_kodu = str(row.get('Malzeme Kodu', ''))
+        env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+        
+        if env_sayisi <= 1:
+            continue
+        
+        onceki = df_onceki[
+            (df_onceki['malzeme_kodu'] == malzeme_kodu) & 
+            (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+        ]
+        
+        if onceki.empty:
+            continue
+        
+        onceki = onceki.iloc[0]
+        
+        fark_simdi = float(row.get('Fark Tutarı', 0) or 0)
+        fark_onceki = float(onceki.get('fark_tutari', 0) or 0)
+        fark_degisim = fark_simdi - fark_onceki
+        
+        # Kronik açık: Her sayımda açık artıyor
+        if fark_degisim < -100:  # 100 TL'den fazla yeni açık
+            sonuclar.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Env.Sayısı': f"{env_sayisi-1} → {env_sayisi}",
+                'Önceki Fark': f"{fark_onceki:,.0f} TL",
+                'Şimdiki Fark': f"{fark_simdi:,.0f} TL",
+                'Yeni Açık': f"{fark_degisim:,.0f} TL"
+            })
+    
+    return sonuclar
+
+def analiz_sayim_atlama(df, beklenen_sayim=4):
+    """Beklenen sayımdan az sayım yapılan ürünleri tespit et"""
+    sonuclar = []
+    magaza_adi_col = get_magaza_adi_col(df)
+    
+    for _, row in df.iterrows():
+        env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+        
+        if env_sayisi < beklenen_sayim:
+            eksik = beklenen_sayim - env_sayisi
+            sonuclar.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Yapılan Sayım': env_sayisi,
+                'Beklenen': beklenen_sayim,
+                'Eksik': f"⚠️ {eksik} sayım eksik"
+            })
+    
+    return sonuclar
+
+def analiz_iptal_artis(df, df_onceki=None):
+    """İptal tutarı artışını tespit et"""
+    sonuclar = []
+    
+    if df_onceki is None or df_onceki.empty:
+        # Önceki yok, sadece yüksek iptalleri göster
+        magaza_adi_col = get_magaza_adi_col(df)
+        for _, row in df.iterrows():
+            iptal = abs(float(row.get('İptal Satır Tutarı', 0) or 0))
+            if iptal > 100:
+                sonuclar.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                    'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'İptal Tutarı': f"{iptal:,.0f} TL",
+                    'Durum': 'Kümülatif iptal'
+                })
+        return sonuclar
+    
+    magaza_adi_col = get_magaza_adi_col(df)
+    
+    for _, row in df.iterrows():
+        malzeme_kodu = str(row.get('Malzeme Kodu', ''))
+        env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+        
+        if env_sayisi <= 1:
+            iptal = abs(float(row.get('İptal Satır Tutarı', 0) or 0))
+            if iptal > 100:
+                sonuclar.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                    'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'İptal Tutarı': f"{iptal:,.0f} TL",
+                    'Durum': 'İlk sayım iptal'
+                })
+            continue
+        
+        onceki = df_onceki[
+            (df_onceki['malzeme_kodu'] == malzeme_kodu) & 
+            (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+        ]
+        
+        if onceki.empty:
+            continue
+        
+        onceki = onceki.iloc[0]
+        
+        iptal_simdi = abs(float(row.get('İptal Satır Tutarı', 0) or 0))
+        iptal_onceki = abs(float(onceki.get('iptal_satir_tutari', 0) or 0))
+        iptal_degisim = iptal_simdi - iptal_onceki
+        
+        if iptal_degisim > 50:  # 50 TL'den fazla yeni iptal
+            sonuclar.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Env.Sayısı': f"{env_sayisi-1} → {env_sayisi}",
+                'Önceki İptal': f"{iptal_onceki:,.0f} TL",
+                'Şimdiki İptal': f"{iptal_simdi:,.0f} TL",
+                'Yeni İptal': f"+{iptal_degisim:,.0f} TL"
+            })
+    
+    return sonuclar
+
+def analiz_yuvarlak_sayi(df):
+    """Yuvarlak sayı girişlerini tespit et (5, 10, 15, 20...)"""
+    sonuclar = []
+    magaza_adi_col = get_magaza_adi_col(df)
+    
+    for _, row in df.iterrows():
+        miktar = row.get('Sayım Miktarı', 0)
+        if pd.isna(miktar) or miktar == 0:
+            continue
+        
+        # Yuvarlak sayı kontrolü (5'in katları)
+        if miktar > 0 and miktar % 5 == 0 and miktar >= 5:
+            sonuclar.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Miktar': f"{miktar:.0f}",
+                'Durum': 'Yuvarlak sayı'
+            })
+    
+    return sonuclar
+
+def analiz_anormal_miktar(df, esik=50):
+    """Anormal yüksek miktarları tespit et"""
+    sonuclar = []
+    magaza_adi_col = get_magaza_adi_col(df)
+    
+    # İstisna ürünler (patates, soğan gibi yüksek olabilir)
+    istisnalar = ['PATATES', 'SOĞAN', 'SOGAN', 'KARPUZ', 'KAVUN']
+    
+    for _, row in df.iterrows():
+        miktar = row.get('Sayım Miktarı', 0)
+        if pd.isna(miktar):
+            continue
+        
+        urun_adi = str(row.get('Malzeme Tanımı', '')).upper()
+        
+        # İstisna kontrolü
+        if any(ist in urun_adi for ist in istisnalar):
+            esik_urun = 200  # Bu ürünler için daha yüksek eşik
+        else:
+            esik_urun = esik
+        
+        if miktar > esik_urun:
+            sonuclar.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Miktar': f"{miktar:.0f}",
+                'Eşik': f">{esik_urun}",
+                'Durum': '⚠️ Anormal yüksek'
+            })
+    
+    return sonuclar
 
 # ==================== RİSK SKORU HESAPLAMA ====================
 
-def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli=None):
+def hesapla_risk_skoru(df, df_onceki=None, urun_medianlar=None):
     """
     Sürekli envanter risk skorunu hesaplar - Toplam 97 puan
-    Her kriter için detaylı mağaza+ürün listesi döndürür
+    ESKİ KRİTERLER ile
     """
-    magaza_kodu = str(df['Mağaza Kodu'].iloc[0]) if 'Mağaza Kodu' in df.columns else None
+    detaylar = {}
+    toplam_puan = 0
     
-    # Mağaza adı kolonunu bul
-    if 'Mağaza Adı' in df.columns:
-        magaza_adi_col = 'Mağaza Adı'
-    elif 'Mağaza Tanım' in df.columns:
-        magaza_adi_col = 'Mağaza Tanım'
-    else:
-        magaza_adi_col = None
-    
+    magaza_kodu = str(df['Mağaza Kodu'].iloc[0]) if 'Mağaza Kodu' in df.columns else ''
+    magaza_adi_col = get_magaza_adi_col(df)
     magaza_adi = str(df[magaza_adi_col].iloc[0]) if magaza_adi_col else ''
     
     # Helper: Satırdan mağaza adı al
-    def get_magaza_adi(row):
+    def get_row_magaza_adi(row):
         if magaza_adi_col and magaza_adi_col in row.index:
             return str(row[magaza_adi_col])
         return magaza_adi
     
-    detaylar = {}
-    toplam_puan = 0
-    
     # 1. BÖLGE SAPMA (20p)
-    sapma_puan = 0
-    sapma_detay = []  # Detaylı liste
+    sapma_detay = []
     if urun_medianlar:
         for _, row in df.iterrows():
             kod = str(row.get('Malzeme Kodu', ''))
             if kod in urun_medianlar:
-                median = urun_medianlar[kod]['median']
+                median = urun_medianlar[kod].get('median', 0)
                 if median > 0:
-                    fark = abs(row.get('Fark Tutarı', 0) or 0)
-                    fire = abs(row.get('Fire Tutarı', 0) or 0)
-                    satis = row.get('Satış Hasılatı', 0) or 0
-                    if satis > MIN_SATIS_HASILATI:
+                    fark = abs(float(row.get('Fark Tutarı', 0) or 0))
+                    fire = abs(float(row.get('Fire Tutarı', 0) or 0))
+                    satis = float(row.get('Satış Hasılatı', 0) or 0)
+                    if satis > 500:
                         magaza_oran = (fark + fire) / satis * 100
                         if magaza_oran > median * 1.5:
                             sapma_detay.append({
                                 'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-                                'Mağaza Adı': get_magaza_adi(row),
-                                'Ürün': str(row.get('Malzeme Tanımı', kod))[:30],
+                                'Mağaza Adı': get_row_magaza_adi(row),
+                                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
                                 'Oran': f"%{magaza_oran:.1f}",
                                 'Median': f"%{median:.1f}",
                                 'Kat': f"{magaza_oran/median:.1f}x"
                             })
-        
-        cnt = len(sapma_detay)
-        sapma_puan = 20 if cnt >= 15 else 15 if cnt >= 10 else 10 if cnt >= 5 else 5 if cnt >= 2 else 0
-    
+    cnt = len(sapma_detay)
+    puan = 20 if cnt >= 15 else 15 if cnt >= 10 else 10 if cnt >= 5 else 5 if cnt >= 2 else 0
     detaylar['bolge_sapma'] = {
-        'puan': sapma_puan, 'max': 20, 
-        'aciklama': f"{len(sapma_detay)} ürün median üstü",
+        'puan': puan, 'max': 20,
+        'aciklama': f"{cnt} ürün median üstü" if urun_medianlar else "Bölge verisi gerekli",
         'detay': sapma_detay
     }
-    toplam_puan += sapma_puan
+    toplam_puan += puan
     
     # 2. SATIR İPTALİ (12p)
     iptal_detay = []
     if 'İptal Satır Tutarı' in df.columns:
-        df_iptal = df[df['İptal Satır Tutarı'] != 0].copy()
-        for _, row in df_iptal.iterrows():
-            iptal_detay.append({
-                'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-                'Mağaza Adı': get_magaza_adi(row),
-                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
-                'İptal Tutarı': f"{abs(row.get('İptal Satır Tutarı', 0)):,.0f} TL"
-            })
-    
+        for _, row in df.iterrows():
+            iptal = abs(float(row.get('İptal Satır Tutarı', 0) or 0))
+            if iptal > 50:
+                iptal_detay.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                    'Mağaza Adı': get_row_magaza_adi(row),
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'İptal Tutarı': f"{iptal:,.0f} TL"
+                })
     iptal_tutar = abs(df['İptal Satır Tutarı'].sum()) if 'İptal Satır Tutarı' in df.columns else 0
-    iptal_puan = 12 if iptal_tutar > 1500 else 8 if iptal_tutar > 500 else 4 if iptal_tutar > 100 else 0
+    puan = 12 if iptal_tutar > 1500 else 8 if iptal_tutar > 500 else 4 if iptal_tutar > 100 else 0
     detaylar['satir_iptali'] = {
-        'puan': iptal_puan, 'max': 12, 
+        'puan': puan, 'max': 12,
         'aciklama': f"{iptal_tutar:,.0f} TL iptal",
         'detay': iptal_detay
     }
-    toplam_puan += iptal_puan
+    toplam_puan += puan
     
-    # 3. KRONİK AÇIK (10p)
-    kronik_acik_puan = 0
+    # 3. KRONİK AÇIK (10p) - Envanter sayısı bazlı
     kronik_acik_detay = []
     veri_var = df_onceki is not None and not df_onceki.empty
     if veri_var:
-        fark_col = 'Fark Miktarı' if 'Fark Miktarı' in df.columns else 'Fark Tutarı'
-        if fark_col in df.columns and fark_col in df_onceki.columns:
-            cur_neg = df[df[fark_col] < 0][['Mağaza Kodu', 'Malzeme Kodu', 'Malzeme Tanımı', fark_col]].copy()
-            cur_neg['Malzeme Kodu'] = cur_neg['Malzeme Kodu'].astype(str)
-            prev_neg_codes = set(df_onceki[df_onceki[fark_col] < 0]['Malzeme Kodu'].astype(str))
-            
-            for _, row in cur_neg.iterrows():
-                if str(row['Malzeme Kodu']) in prev_neg_codes:
-                    kronik_acik_detay.append({
-                        'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-                        'Mağaza Adı': magaza_adi,
-                        'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
-                        'Fark': f"{row.get(fark_col, 0):,.0f}",
-                        'Durum': '2+ hafta açık'
-                    })
-            
-            cnt = len(kronik_acik_detay)
-            kronik_acik_puan = 10 if cnt >= 10 else 6 if cnt >= 5 else 3 if cnt >= 2 else 0
-    
+        for _, row in df.iterrows():
+            malzeme_kodu = str(row.get('Malzeme Kodu', ''))
+            env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+            if env_sayisi <= 1:
+                continue
+            onceki = df_onceki[
+                (df_onceki['malzeme_kodu'].astype(str) == malzeme_kodu) & 
+                (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+            ]
+            if onceki.empty:
+                continue
+            onceki = onceki.iloc[0]
+            fark_simdi = float(row.get('Fark Tutarı', 0) or 0)
+            fark_onceki = float(onceki.get('fark_tutari', 0) or 0)
+            if fark_simdi < fark_onceki - 50:  # Daha fazla açık
+                kronik_acik_detay.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                    'Mağaza Adı': get_row_magaza_adi(row),
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'Önceki': f"{fark_onceki:,.0f}",
+                    'Şimdi': f"{fark_simdi:,.0f}",
+                    'Durum': 'Açık artıyor'
+                })
+    cnt = len(kronik_acik_detay)
+    puan = 10 if cnt >= 10 else 6 if cnt >= 5 else 3 if cnt >= 2 else 0
     detaylar['kronik_acik'] = {
-        'puan': kronik_acik_puan, 'max': 10, 
-        'aciklama': f"{len(kronik_acik_detay)} ürün 2+ hafta açık" if veri_var else "⏳ Geçmiş veri bekleniyor",
-        'veri_var': veri_var,
+        'puan': puan, 'max': 10,
+        'aciklama': f"{cnt} ürün 2+ sayımda açık" if veri_var else "⏳ Önceki veri bekleniyor",
         'detay': kronik_acik_detay
     }
-    toplam_puan += kronik_acik_puan
+    toplam_puan += puan
     
     # 4. AİLE ANALİZİ (5p) - TODO
-    detaylar['aile_analizi'] = {'puan': 0, 'max': 5, 'aciklama': "Henüz aktif değil", 'detay': []}
+    detaylar['aile_analizi'] = {
+        'puan': 0, 'max': 5,
+        'aciklama': "Henüz aktif değil",
+        'detay': []
+    }
     
     # 5. KRONİK FİRE (8p)
-    kronik_fire_puan = 0
     kronik_fire_detay = []
-    if veri_var and 'Fire Miktarı' in df.columns and 'Fire Miktarı' in df_onceki.columns:
-        cur_fire = df[df['Fire Miktarı'] < 0][['Mağaza Kodu', 'Malzeme Kodu', 'Malzeme Tanımı', 'Fire Miktarı', 'Fire Tutarı']].copy()
-        cur_fire['Malzeme Kodu'] = cur_fire['Malzeme Kodu'].astype(str)
-        prev_fire_codes = set(df_onceki[df_onceki['Fire Miktarı'] < 0]['Malzeme Kodu'].astype(str))
-        
-        for _, row in cur_fire.iterrows():
-            if str(row['Malzeme Kodu']) in prev_fire_codes:
+    if veri_var:
+        for _, row in df.iterrows():
+            malzeme_kodu = str(row.get('Malzeme Kodu', ''))
+            env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+            if env_sayisi <= 1:
+                continue
+            onceki = df_onceki[
+                (df_onceki['malzeme_kodu'].astype(str) == malzeme_kodu) & 
+                (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+            ]
+            if onceki.empty:
+                continue
+            onceki = onceki.iloc[0]
+            fire_simdi = float(row.get('Fire Tutarı', 0) or 0)
+            fire_onceki = float(onceki.get('fire_tutari', 0) or 0)
+            if fire_simdi < fire_onceki - 50:  # Daha fazla fire
                 kronik_fire_detay.append({
                     'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-                    'Mağaza Adı': magaza_adi,
+                    'Mağaza Adı': get_row_magaza_adi(row),
                     'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
-                    'Fire': f"{abs(row.get('Fire Tutarı', 0)):,.0f} TL",
-                    'Durum': '2+ hafta fire'
+                    'Önceki': f"{fire_onceki:,.0f}",
+                    'Şimdi': f"{fire_simdi:,.0f}",
+                    'Durum': 'Fire artıyor'
                 })
-        
-        cnt = len(kronik_fire_detay)
-        kronik_fire_puan = 8 if cnt >= 8 else 5 if cnt >= 4 else 2 if cnt >= 2 else 0
-    
+    cnt = len(kronik_fire_detay)
+    puan = 8 if cnt >= 8 else 5 if cnt >= 4 else 2 if cnt >= 2 else 0
     detaylar['kronik_fire'] = {
-        'puan': kronik_fire_puan, 'max': 8, 
-        'aciklama': f"{len(kronik_fire_detay)} ürün 2+ hafta fire" if veri_var else "⏳ Geçmiş veri bekleniyor",
-        'veri_var': veri_var,
+        'puan': puan, 'max': 8,
+        'aciklama': f"{cnt} ürün 2+ sayımda fire" if veri_var else "⏳ Önceki veri bekleniyor",
         'detay': kronik_fire_detay
     }
-    toplam_puan += kronik_fire_puan
+    toplam_puan += puan
     
-    # 6. FİRE MANİPÜLASYONU (8p)
-    fire_manip_df = detect_fire_manipulasyon(df)
+    # 6. FİRE MANİPÜLASYONU (8p) - Fire var ama açık artıyor
     fire_manip_detay = []
-    for _, row in fire_manip_df.iterrows():
-        fire_manip_detay.append({
-            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-            'Mağaza Adı': get_magaza_adi(row),
-            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
-            'Fire': f"{abs(row.get('Fire Tutarı', 0)):,.0f} TL",
-            'Fark': f"{row.get('Fark Tutarı', 0):,.0f} TL",
-            'Durum': 'Fire var ama fazla çıkmış'
-        })
-    
+    if veri_var:
+        for _, row in df.iterrows():
+            malzeme_kodu = str(row.get('Malzeme Kodu', ''))
+            env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+            if env_sayisi <= 1:
+                continue
+            onceki = df_onceki[
+                (df_onceki['malzeme_kodu'].astype(str) == malzeme_kodu) & 
+                (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+            ]
+            if onceki.empty:
+                continue
+            onceki = onceki.iloc[0]
+            fark_simdi = float(row.get('Fark Tutarı', 0) or 0)
+            fark_onceki = float(onceki.get('fark_tutari', 0) or 0)
+            fire_simdi = float(row.get('Fire Tutarı', 0) or 0)
+            fire_onceki = float(onceki.get('fire_tutari', 0) or 0)
+            fark_degisim = fark_simdi - fark_onceki
+            fire_degisim = fire_simdi - fire_onceki
+            # Açık arttı (daha negatif) ama fire yazmadı
+            if fark_degisim < -50 and fire_degisim > -10:
+                fire_manip_detay.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                    'Mağaza Adı': get_row_magaza_adi(row),
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'Fark Değişim': f"{fark_degisim:,.0f}",
+                    'Fire Değişim': f"{fire_degisim:,.0f}",
+                    'Durum': '🚨 Fire yazmadan açık'
+                })
     cnt = len(fire_manip_detay)
-    fire_manip_puan = 8 if cnt >= 5 else 5 if cnt >= 3 else 2 if cnt >= 1 else 0
+    puan = 8 if cnt >= 5 else 5 if cnt >= 3 else 2 if cnt >= 1 else 0
     detaylar['fire_manipulasyon'] = {
-        'puan': fire_manip_puan, 'max': 8, 
-        'aciklama': f"{cnt} üründe fire↑ açık↓",
+        'puan': puan, 'max': 8,
+        'aciklama': f"{cnt} üründe fire↑ açık↓" if veri_var else "⏳ Önceki veri bekleniyor",
         'detay': fire_manip_detay
     }
-    toplam_puan += fire_manip_puan
+    toplam_puan += puan
     
-    # 7. SAYILMAYAN ÜRÜN (8p)
-    sayilmayan_puan = 0
-    sayilmayan_detay = []
-    if magaza_kodu:
-        sayilmayan = detect_sayilmayan_urunler(df, magaza_kodu, blokajli)
-        for u in sayilmayan:
-            sayilmayan_detay.append({
-                'Mağaza Kodu': magaza_kodu,
-                'Mağaza Adı': magaza_adi,
-                'Ürün': u['Malzeme Tanımı'][:30],
-                'Segment': u['Segment'],
-                'Durum': 'Sayılmamış'
-            })
-        
-        cnt = len(sayilmayan_detay)
-        sayilmayan_puan = 8 if cnt >= 10 else 5 if cnt >= 5 else 2 if cnt >= 2 else 0
-    
+    # 7. SAYILMAYAN ÜRÜN (8p) - Sayım atlama
+    sayim_detay = []
+    gun = datetime.now().day
+    beklenen_sayim = min((gun // 7) + 1, 4)
+    if 'Envanter Sayisi' in df.columns:
+        for _, row in df.iterrows():
+            env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+            if env_sayisi < beklenen_sayim:
+                sayim_detay.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                    'Mağaza Adı': get_row_magaza_adi(row),
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'Yapılan': env_sayisi,
+                    'Beklenen': beklenen_sayim,
+                    'Durum': f"⚠️ {beklenen_sayim - env_sayisi} eksik"
+                })
+    cnt = len(sayim_detay)
+    puan = 8 if cnt >= 10 else 5 if cnt >= 5 else 2 if cnt >= 2 else 0
     detaylar['sayilmayan_urun'] = {
-        'puan': sayilmayan_puan, 'max': 8, 
-        'aciklama': f"{len(sayilmayan_detay)} ürün sayılmamış",
-        'detay': sayilmayan_detay
+        'puan': puan, 'max': 8,
+        'aciklama': f"{cnt} üründe sayım eksik (beklenen: {beklenen_sayim})",
+        'detay': sayim_detay
     }
-    toplam_puan += sayilmayan_puan
+    toplam_puan += puan
     
     # 8. ANORMAL MİKTAR (10p)
-    anormal_df = detect_anormal_miktar(df)
     anormal_detay = []
-    for _, row in anormal_df.iterrows():
-        anormal_detay.append({
-            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-            'Mağaza Adı': get_magaza_adi(row),
-            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
-            'Miktar': f"{row.get('Sayım Miktarı', 0):.0f}",
-            'Durum': '>50 kg/adet'
-        })
-    
+    istisnalar = ['PATATES', 'SOĞAN', 'SOGAN', 'KARPUZ', 'KAVUN']
+    for _, row in df.iterrows():
+        miktar = row.get('Sayım Miktarı', 0)
+        if pd.isna(miktar):
+            continue
+        urun_adi = str(row.get('Malzeme Tanımı', '')).upper()
+        esik = 200 if any(ist in urun_adi for ist in istisnalar) else 50
+        if miktar > esik:
+            anormal_detay.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                'Mağaza Adı': get_row_magaza_adi(row),
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Miktar': f"{miktar:.0f}",
+                'Durum': f'>{esik} kg/adet'
+            })
     cnt = len(anormal_detay)
-    anormal_puan = 10 if cnt >= 5 else 6 if cnt >= 3 else 3 if cnt >= 1 else 0
+    puan = 10 if cnt >= 5 else 6 if cnt >= 3 else 3 if cnt >= 1 else 0
     detaylar['anormal_miktar'] = {
-        'puan': anormal_puan, 'max': 10, 
+        'puan': puan, 'max': 10,
         'aciklama': f"{cnt} üründe >50 kg/adet",
         'detay': anormal_detay
     }
-    toplam_puan += anormal_puan
+    toplam_puan += puan
     
     # 9. TEKRAR MİKTAR (8p)
-    tekrar_puan = 0
     tekrar_detay = []
-    if veri_var and 'Sayım Miktarı' in df.columns and 'Sayım Miktarı' in df_onceki.columns:
-        try:
-            prev_dict = df_onceki.set_index('Malzeme Kodu')['Sayım Miktarı'].to_dict()
-            for _, row in df.iterrows():
-                kod = row.get('Malzeme Kodu')
-                miktar = row.get('Sayım Miktarı', 0)
-                if kod in prev_dict and pd.notna(miktar) and miktar > 0:
-                    prev = prev_dict[kod]
-                    if pd.notna(prev) and prev > 0 and abs(miktar - prev) / prev <= 0.03:
-                        tekrar_detay.append({
-                            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-                            'Mağaza Adı': magaza_adi,
-                            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
-                            'Bu Hafta': f"{miktar:.1f}",
-                            'Önceki': f"{prev:.1f}",
-                            'Durum': 'Aynı miktar'
-                        })
-            cnt = len(tekrar_detay)
-            tekrar_puan = 8 if cnt >= 10 else 5 if cnt >= 5 else 2 if cnt >= 2 else 0
-        except:
-            pass
-    
+    if veri_var:
+        for _, row in df.iterrows():
+            malzeme_kodu = str(row.get('Malzeme Kodu', ''))
+            env_sayisi = int(row.get('Envanter Sayisi', 1) or 1)
+            miktar = row.get('Sayım Miktarı', 0)
+            if env_sayisi <= 1 or pd.isna(miktar) or miktar <= 0:
+                continue
+            onceki = df_onceki[
+                (df_onceki['malzeme_kodu'].astype(str) == malzeme_kodu) & 
+                (df_onceki['envanter_sayisi'] == env_sayisi - 1)
+            ]
+            if onceki.empty:
+                continue
+            onceki = onceki.iloc[0]
+            onceki_miktar = float(onceki.get('sayim_miktari', 0) or 0)
+            if onceki_miktar > 0 and abs(miktar - onceki_miktar) / onceki_miktar <= 0.03:
+                tekrar_detay.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                    'Mağaza Adı': get_row_magaza_adi(row),
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'Önceki': f"{onceki_miktar:.1f}",
+                    'Şimdi': f"{miktar:.1f}",
+                    'Durum': 'Aynı miktar'
+                })
+    cnt = len(tekrar_detay)
+    puan = 8 if cnt >= 10 else 5 if cnt >= 5 else 2 if cnt >= 2 else 0
     detaylar['tekrar_miktar'] = {
-        'puan': tekrar_puan, 'max': 8, 
-        'aciklama': f"{len(tekrar_detay)} ürün aynı miktar" if veri_var else "⏳ Geçmiş veri bekleniyor",
-        'veri_var': veri_var,
+        'puan': puan, 'max': 8,
+        'aciklama': f"{cnt} ürün aynı miktar" if veri_var else "⏳ Önceki veri bekleniyor",
         'detay': tekrar_detay
     }
-    toplam_puan += tekrar_puan
+    toplam_puan += puan
     
     # 10. YUVARLAK SAYI (8p)
-    yuvarlak_df = detect_yuvarlak_sayi(df)
     yuvarlak_detay = []
-    for _, row in yuvarlak_df.iterrows():
-        yuvarlak_detay.append({
-            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-            'Mağaza Adı': get_magaza_adi(row),
-            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
-            'Miktar': f"{row.get('Sayım Miktarı', 0):.0f}",
-            'Durum': 'Yuvarlak sayı (5,10,15...)'
-        })
-    
-    yuvarlak_oran = len(yuvarlak_detay) / max(len(df), 1)
-    yuvarlak_puan = 8 if yuvarlak_oran > 0.35 else 5 if yuvarlak_oran > 0.20 else 2 if yuvarlak_oran > 0.10 else 0
+    for _, row in df.iterrows():
+        miktar = row.get('Sayım Miktarı', 0)
+        if pd.isna(miktar) or miktar == 0:
+            continue
+        if miktar > 0 and miktar % 5 == 0 and miktar >= 5:
+            yuvarlak_detay.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                'Mağaza Adı': get_row_magaza_adi(row),
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Miktar': f"{miktar:.0f}",
+                'Durum': 'Yuvarlak sayı'
+            })
+    cnt = len(yuvarlak_detay)
+    yuvarlak_oran = cnt / max(len(df), 1)
+    puan = 8 if yuvarlak_oran > 0.35 else 5 if yuvarlak_oran > 0.20 else 2 if yuvarlak_oran > 0.10 else 0
     detaylar['yuvarlak_sayi'] = {
-        'puan': yuvarlak_puan, 'max': 8, 
-        'aciklama': f"{len(yuvarlak_detay)} ürün (%{yuvarlak_oran*100:.0f}) yuvarlak",
+        'puan': puan, 'max': 8,
+        'aciklama': f"{cnt} ürün (%{yuvarlak_oran*100:.0f}) yuvarlak",
         'detay': yuvarlak_detay
     }
-    toplam_puan += yuvarlak_puan
+    toplam_puan += puan
     
-    # Seviye
-    if toplam_puan <= 25: seviye, emoji = 'normal', '✅'
-    elif toplam_puan <= 50: seviye, emoji = 'dikkat', '⚠️'
-    elif toplam_puan <= 75: seviye, emoji = 'riskli', '🟠'
-    else: seviye, emoji = 'kritik', '🔴'
+    # Seviye belirleme
+    if toplam_puan <= 25:
+        seviye, emoji = 'normal', '✅'
+    elif toplam_puan <= 50:
+        seviye, emoji = 'dikkat', '⚠️'
+    elif toplam_puan <= 75:
+        seviye, emoji = 'riskli', '🟠'
+    else:
+        seviye, emoji = 'kritik', '🔴'
     
     return {
-        'toplam_puan': toplam_puan, 
-        'max_puan': 97, 
-        'seviye': seviye, 
-        'emoji': emoji, 
-        'detaylar': detaylar
+        'toplam_puan': toplam_puan,
+        'max_puan': 97,
+        'seviye': seviye,
+        'emoji': emoji,
+        'detaylar': detaylar,
+        'magaza_kodu': magaza_kodu,
+        'magaza_adi': magaza_adi
     }
 
+# ==================== ÖZET FONKSİYONLARI ====================
 
-def hesapla_risk_skoru(df, df_onceki=None, urun_medianlar=None, blokajli=None):
-    """Eski fonksiyon - geriye uyumluluk için"""
-    return hesapla_risk_skoru_detayli(df, df_onceki, urun_medianlar, blokajli)
+def hesapla_kategori_ozet(df):
+    """Kategori bazlı özet hesapla"""
+    ozet = {}
+    
+    for _, row in df.iterrows():
+        kategori = detect_kategori(row)
+        if kategori == 'Diğer':
+            continue
+        
+        if kategori not in ozet:
+            ozet[kategori] = {'fark': 0, 'fire': 0, 'satis': 0, 'urun_sayisi': 0}
+        
+        ozet[kategori]['fark'] += float(row.get('Fark Tutarı', 0) or 0)
+        ozet[kategori]['fire'] += float(row.get('Fire Tutarı', 0) or 0)
+        ozet[kategori]['satis'] += float(row.get('Satış Hasılatı', 0) or 0)
+        ozet[kategori]['urun_sayisi'] += 1
+    
+    # Oran hesapla
+    for kat in ozet:
+        kayip = abs(ozet[kat]['fark']) + abs(ozet[kat]['fire'])
+        satis = ozet[kat]['satis']
+        ozet[kat]['oran'] = (kayip / satis * 100) if satis > 0 else 0
+    
+    return ozet
 
-
-# ==================== BÖLGE ÖZETİ ====================
-
-def hesapla_bolge_ozeti(df):
-    """Top 10 mağaza, Top 5 ürün"""
-    sonuc = {}
+def hesapla_magaza_ozet(df):
+    """Mağaza bazlı özet hesapla"""
     magaza_adi_col = get_magaza_adi_col(df)
     
-    if 'Mağaza Kodu' in df.columns:
-        agg_dict = {'Fark Tutarı': 'sum', 'Fire Tutarı': 'sum', 'Satış Hasılatı': 'sum'}
-        if magaza_adi_col:
-            agg_dict[magaza_adi_col] = 'first'
-        
-        mag_ozet = df.groupby('Mağaza Kodu').agg(agg_dict).reset_index()
-        if magaza_adi_col:
-            mag_ozet = mag_ozet.rename(columns={magaza_adi_col: 'Mağaza Adı'})
-        else:
-            mag_ozet['Mağaza Adı'] = mag_ozet['Mağaza Kodu']
-        
-        mag_ozet['Toplam Kayıp'] = abs(mag_ozet['Fark Tutarı']) + abs(mag_ozet['Fire Tutarı'])
-        mag_ozet['Oran'] = np.where(mag_ozet['Satış Hasılatı'] > 0, mag_ozet['Toplam Kayıp'] / mag_ozet['Satış Hasılatı'] * 100, 0)
-        sonuc['top10_magaza'] = mag_ozet.nlargest(10, 'Oran')
+    agg_dict = {
+        'Fark Tutarı': 'sum',
+        'Fire Tutarı': 'sum',
+        'Satış Hasılatı': 'sum',
+        'Malzeme Kodu': 'count'
+    }
+    if magaza_adi_col:
+        agg_dict[magaza_adi_col] = 'first'
     
-    if 'Malzeme Kodu' in df.columns and 'Fark Tutarı' in df.columns:
-        urun = df.groupby(['Malzeme Kodu', 'Malzeme Tanımı']).agg({'Fark Tutarı': 'sum', 'Mağaza Kodu': 'nunique'}).reset_index()
-        urun.columns = ['Kod', 'Tanım', 'Fark', 'Mağaza']
-        acik = urun[urun['Fark'] < 0].copy()
-        acik['Fark'] = abs(acik['Fark'])
-        sonuc['top5_acik'] = acik.nlargest(5, 'Fark')
+    ozet = df.groupby('Mağaza Kodu').agg(agg_dict).reset_index()
+    ozet.columns = ['Mağaza Kodu', 'Fark', 'Fire', 'Satış', 'Ürün Sayısı'] + (['Mağaza Adı'] if magaza_adi_col else [])
     
-    if 'Fire Tutarı' in df.columns:
-        urun = df.groupby(['Malzeme Kodu', 'Malzeme Tanımı']).agg({'Fire Tutarı': 'sum', 'Mağaza Kodu': 'nunique'}).reset_index()
-        urun.columns = ['Kod', 'Tanım', 'Fire', 'Mağaza']
-        fire = urun[urun['Fire'] < 0].copy()
-        fire['Fire'] = abs(fire['Fire'])
-        sonuc['top5_fire'] = fire.nlargest(5, 'Fire')
+    ozet['Kayıp'] = abs(ozet['Fark']) + abs(ozet['Fire'])
+    ozet['Oran'] = np.where(ozet['Satış'] > 0, ozet['Kayıp'] / ozet['Satış'] * 100, 0)
+    
+    # SM/BS ekle
+    ozet['SM'] = ozet['Mağaza Kodu'].apply(lambda x: get_magaza_bilgi(x)['sm'])
+    ozet['BS'] = ozet['Mağaza Kodu'].apply(lambda x: get_magaza_bilgi(x)['bs'])
+    
+    return ozet.sort_values('Oran', ascending=False)
+
+def hesapla_sm_ozet(df):
+    """SM bazlı özet hesapla"""
+    magaza_ozet = hesapla_magaza_ozet(df)
+    
+    sm_ozet = magaza_ozet.groupby('SM').agg({
+        'Mağaza Kodu': 'nunique',
+        'Fark': 'sum',
+        'Fire': 'sum',
+        'Satış': 'sum',
+        'Kayıp': 'sum'
+    }).reset_index()
+    
+    sm_ozet.columns = ['SM', 'Mağaza Sayısı', 'Fark', 'Fire', 'Satış', 'Kayıp']
+    sm_ozet['Oran'] = np.where(sm_ozet['Satış'] > 0, sm_ozet['Kayıp'] / sm_ozet['Satış'] * 100, 0)
+    
+    return sm_ozet.sort_values('Oran', ascending=False)
+
+def hesapla_top10(df):
+    """Top 10 listelerini hesapla"""
+    magaza_ozet = hesapla_magaza_ozet(df)
+    
+    sonuc = {
+        'top10_magaza': magaza_ozet.nlargest(10, 'Oran'),
+        'top5_acik': None,
+        'top5_fire': None
+    }
+    
+    # Ürün bazlı
+    if 'Malzeme Kodu' in df.columns:
+        urun_ozet = df.groupby(['Malzeme Kodu', 'Malzeme Tanımı']).agg({
+            'Fark Tutarı': 'sum',
+            'Fire Tutarı': 'sum',
+            'Mağaza Kodu': 'nunique'
+        }).reset_index()
+        
+        urun_ozet.columns = ['Kod', 'Ürün', 'Fark', 'Fire', 'Mağaza Sayısı']
+        
+        sonuc['top5_acik'] = urun_ozet.nsmallest(5, 'Fark')[['Ürün', 'Fark', 'Mağaza Sayısı']]
+        sonuc['top5_fire'] = urun_ozet.nsmallest(5, 'Fire')[['Ürün', 'Fire', 'Mağaza Sayısı']]
     
     return sonuc
-
-def hesapla_urun_bolge_median(df):
-    """Ürün bazında bölge medianı"""
-    if 'Malzeme Kodu' not in df.columns:
-        return {}
-    
-    urun_oranlar = {}
-    for kod in df['Malzeme Kodu'].unique():
-        df_urun = df[df['Malzeme Kodu'] == kod]
-        oranlar = []
-        for mag in df_urun['Mağaza Kodu'].unique():
-            df_m = df_urun[df_urun['Mağaza Kodu'] == mag]
-            fark = abs(df_m['Fark Tutarı'].sum()) if 'Fark Tutarı' in df_m.columns else 0
-            fire = abs(df_m['Fire Tutarı'].sum()) if 'Fire Tutarı' in df_m.columns else 0
-            satis = df_m['Satış Hasılatı'].sum() if 'Satış Hasılatı' in df_m.columns else 0
-            if satis > MIN_SATIS_HASILATI:
-                oranlar.append((fark + fire) / satis * 100)
-        if oranlar:
-            urun_oranlar[str(kod)] = {'median': np.median(oranlar), 'mean': np.mean(oranlar), 'count': len(oranlar)}
-    return urun_oranlar
 
 # ==================== SAYIM DİSİPLİNİ ====================
 
-def hesapla_sayim_disiplini(df, magaza_kodu=None, bs=None, sm=None):
-    """Sayım disiplini - sadece dosyadaki mağazalar için"""
-    kategoriler = ['Meyve/Sebz', 'Et-Tavuk', 'Ekmek']
-    if 'Depolama Koşulu' not in df.columns:
-        return None
+def hesapla_sayim_disiplini(df, beklenen_sayim=None):
+    """Sayım disiplini analizi - hangi ürünler kaç kez sayılmış"""
+    if beklenen_sayim is None:
+        gun = datetime.now().day
+        beklenen_sayim = min((gun // 7) + 1, 4)
     
-    dosyadaki = set(df['Mağaza Kodu'].astype(str).unique()) if 'Mağaza Kodu' in df.columns else set()
-    sonuc = {'kategoriler': {}, 'toplam_beklenen': 0, 'toplam_yapilan': 0}
+    sonuc = {
+        'beklenen_sayim': beklenen_sayim,
+        'urunler': [],
+        'ozet': {}
+    }
     
-    if magaza_kodu:
-        df_m = df[df['Mağaza Kodu'].astype(str) == str(magaza_kodu)]
-        for kat in kategoriler:
-            sonuc['kategoriler'][kat] = {'beklenen': 1, 'yapilan': 1 if kat in df_m['Depolama Koşulu'].values else 0}
-        sonuc['toplam_beklenen'] = 3
-        sonuc['toplam_yapilan'] = sum(v['yapilan'] for v in sonuc['kategoriler'].values())
-        sonuc['magaza_sayisi'] = 1
+    magaza_adi_col = get_magaza_adi_col(df)
     
-    elif bs:
-        bs_mag = set(k for k, v in SM_BS_MAGAZA.items() if v['bs'] == bs)
-        aktif = bs_mag & dosyadaki
-        if not aktif:
-            return None
-        for kat in kategoriler:
-            df_k = df[(df['Depolama Koşulu'] == kat) & (df['Mağaza Kodu'].astype(str).isin(aktif))]
-            sonuc['kategoriler'][kat] = {'beklenen': len(aktif), 'yapilan': df_k['Mağaza Kodu'].nunique()}
-        sonuc['toplam_beklenen'] = len(aktif) * 3
-        sonuc['toplam_yapilan'] = sum(v['yapilan'] for v in sonuc['kategoriler'].values())
-        sonuc['magaza_sayisi'] = len(aktif)
+    # Envanter sayısı dağılımı
+    if 'Envanter Sayisi' in df.columns:
+        for env_sayisi in range(1, beklenen_sayim + 1):
+            cnt = len(df[df['Envanter Sayisi'] == env_sayisi])
+            sonuc['ozet'][f'sayim_{env_sayisi}'] = cnt
+        
+        # Eksik sayımlar
+        eksik = df[df['Envanter Sayisi'] < beklenen_sayim]
+        for _, row in eksik.iterrows():
+            sonuc['urunler'].append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+                'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'Yapılan': int(row.get('Envanter Sayisi', 1)),
+                'Beklenen': beklenen_sayim,
+                'Eksik': beklenen_sayim - int(row.get('Envanter Sayisi', 1))
+            })
     
-    elif sm:
-        sm_mag = set(k for k, v in SM_BS_MAGAZA.items() if v['sm'] == sm)
-        aktif = sm_mag & dosyadaki
-        if not aktif:
-            return None
-        for kat in kategoriler:
-            df_k = df[(df['Depolama Koşulu'] == kat) & (df['Mağaza Kodu'].astype(str).isin(aktif))]
-            sonuc['kategoriler'][kat] = {'beklenen': len(aktif), 'yapilan': df_k['Mağaza Kodu'].nunique()}
-        sonuc['toplam_beklenen'] = len(aktif) * 3
-        sonuc['toplam_yapilan'] = sum(v['yapilan'] for v in sonuc['kategoriler'].values())
-        sonuc['magaza_sayisi'] = len(aktif)
-    
-    sonuc['oran'] = (sonuc['toplam_yapilan'] / sonuc['toplam_beklenen'] * 100) if sonuc['toplam_beklenen'] > 0 else 0
     return sonuc
 
-# ==================== SM/BS RİSK ÖZETİ ====================
+# ==================== EXPORT ====================
 
-def hesapla_tum_sm_risk(df, df_onceki=None):
-    """Dosyadaki SM'lerin risk skorları"""
-    dosyadaki = set(df['Mağaza Kodu'].astype(str).unique())
-    aktif_sm = set(SM_BS_MAGAZA[m]['sm'] for m in dosyadaki if m in SM_BS_MAGAZA)
-    
-    sonuc = []
-    for sm in aktif_sm:
-        sm_mag = set(k for k, v in SM_BS_MAGAZA.items() if v['sm'] == sm) & dosyadaki
-        if not sm_mag:
-            continue
-        
-        skorlar = []
-        for m in sm_mag:
-            df_m = df[df['Mağaza Kodu'].astype(str) == m]
-            df_m_onceki = df_onceki[df_onceki['Mağaza Kodu'].astype(str) == m] if df_onceki is not None else None
-            risk = hesapla_risk_skoru(df_m, df_m_onceki)
-            skorlar.append({'magaza': m, 'skor': risk['toplam_puan'], 'seviye': risk['seviye'], 'emoji': risk['emoji']})
-        
-        s = [x['skor'] for x in skorlar]
-        sonuc.append({
-            'sm': sm, 'magaza_sayisi': len(skorlar), 'ortalama_skor': np.mean(s), 'median_skor': np.median(s),
-            'kritik': sum(1 for x in skorlar if x['seviye'] == 'kritik'),
-            'riskli': sum(1 for x in skorlar if x['seviye'] == 'riskli'),
-            'dikkat': sum(1 for x in skorlar if x['seviye'] == 'dikkat'),
-            'normal': sum(1 for x in skorlar if x['seviye'] == 'normal'),
-            'magazalar': sorted(skorlar, key=lambda x: x['skor'], reverse=True)
-        })
-    return sorted(sonuc, key=lambda x: x['ortalama_skor'], reverse=True)
+# Geriye uyumluluk için eski fonksiyon isimleri
+def detect_yuvarlak_sayi(df):
+    """Yuvarlak sayı DataFrame döndür"""
+    sonuclar = analiz_yuvarlak_sayi(df)
+    if not sonuclar:
+        return pd.DataFrame()
+    return pd.DataFrame(sonuclar)
 
-def hesapla_tum_bs_risk(df, df_onceki=None):
-    """Dosyadaki BS'lerin risk skorları"""
-    dosyadaki = set(df['Mağaza Kodu'].astype(str).unique())
-    aktif_bs = set(SM_BS_MAGAZA[m]['bs'] for m in dosyadaki if m in SM_BS_MAGAZA)
-    
-    sonuc = []
-    for bs in aktif_bs:
-        bs_mag = set(k for k, v in SM_BS_MAGAZA.items() if v['bs'] == bs) & dosyadaki
-        if not bs_mag:
-            continue
-        
-        skorlar = []
-        for m in bs_mag:
-            df_m = df[df['Mağaza Kodu'].astype(str) == m]
-            df_m_onceki = df_onceki[df_onceki['Mağaza Kodu'].astype(str) == m] if df_onceki is not None else None
-            risk = hesapla_risk_skoru(df_m, df_m_onceki)
-            skorlar.append({'magaza': m, 'skor': risk['toplam_puan'], 'seviye': risk['seviye'], 'emoji': risk['emoji']})
-        
-        s = [x['skor'] for x in skorlar]
-        sonuc.append({
-            'bs': bs, 'magaza_sayisi': len(skorlar), 'ortalama_skor': np.mean(s),
-            'kritik': sum(1 for x in skorlar if x['seviye'] == 'kritik'),
-            'riskli': sum(1 for x in skorlar if x['seviye'] == 'riskli'),
-            'magazalar': sorted(skorlar, key=lambda x: x['skor'], reverse=True)
-        })
-    return sorted(sonuc, key=lambda x: x['ortalama_skor'], reverse=True)
+def detect_anormal_miktar(df):
+    """Anormal miktar DataFrame döndür"""
+    sonuclar = analiz_anormal_miktar(df)
+    if not sonuclar:
+        return pd.DataFrame()
+    return pd.DataFrame(sonuclar)
 
-# ==================== SUPABASE FONKSİYONLARI ====================
+def detect_fire_manipulasyon(df):
+    """Fire manipülasyon - eski versiyon uyumluluğu"""
+    # Yeni sistemde bu analiz_fire_yazmama ile yapılıyor
+    return pd.DataFrame()
 
-def prepare_surekli_kayit(df, envanter_tarihi=None):
-    """Supabase için kayıt hazırla"""
-    if envanter_tarihi is None:
-        envanter_tarihi = pd.to_datetime(df['Envanter Tarihi']).max() if 'Envanter Tarihi' in df.columns else datetime.now()
-    if isinstance(envanter_tarihi, str):
-        envanter_tarihi = pd.to_datetime(envanter_tarihi)
-    
-    records = []
-    magaza_adi_col = get_magaza_adi_col(df)
-    if 'Depolama Koşulu' not in df.columns or 'Mağaza Kodu' not in df.columns:
-        return records
-    
-    for magaza in df['Mağaza Kodu'].unique():
-        df_m = df[df['Mağaza Kodu'] == magaza]
-        kod = str(magaza)
-        adi = str(df_m[magaza_adi_col].iloc[0])[:100] if magaza_adi_col else ''
-        bilgi = get_magaza_bilgi(kod)
-        risk = hesapla_risk_skoru(df_m)
-        
-        for kat in df_m['Depolama Koşulu'].unique():
-            df_k = df_m[df_m['Depolama Koşulu'] == kat]
-            fark = float(df_k['Fark Tutarı'].sum()) if 'Fark Tutarı' in df_k.columns else 0
-            fire = float(df_k['Fire Tutarı'].sum()) if 'Fire Tutarı' in df_k.columns else 0
-            satis = float(df_k['Satış Hasılatı'].sum()) if 'Satış Hasılatı' in df_k.columns else 0
-            oran = (abs(fark) + abs(fire)) / satis * 100 if satis > 0 else 0
-            
-            records.append({
-                'magaza_kodu': kod, 'magaza_adi': adi, 'sm': bilgi['sm'], 'bs': bilgi['bs'],
-                'envanter_tarihi': envanter_tarihi.strftime('%Y-%m-%d'), 'kategori': kat,
-                'fark_tutari': round(fark, 2), 'fire_tutari': round(fire, 2),
-                'satis_hasilati': round(satis, 2), 'oran': round(oran, 2),
-                'sayilan_urun_sayisi': len(df_k), 'toplam_urun_sayisi': len(df_k),
-                'risk_skoru': risk['toplam_puan']
-            })
-    return records
-
-def save_surekli_to_supabase(supabase_client, records):
-    """Kayıtları Supabase'e yaz"""
-    if not records:
-        return 0, 0
-    inserted, skipped = 0, 0
-    for r in records:
-        try:
-            supabase_client.table('surekli_envanter_ozet').upsert(r, on_conflict='magaza_kodu,envanter_tarihi,kategori').execute()
-            inserted += 1
-        except Exception as e:
-            if 'duplicate' in str(e).lower():
-                skipped += 1
-            else:
-                raise
-    return inserted, skipped
-
-def get_onceki_hafta_verisi(supabase_client, magaza_kodu, envanter_tarihi, gun=7):
-    """Önceki hafta verisini çek"""
-    if isinstance(envanter_tarihi, str):
-        envanter_tarihi = pd.to_datetime(envanter_tarihi)
-    onceki = (envanter_tarihi - timedelta(days=gun)).strftime('%Y-%m-%d')
-    try:
-        r = supabase_client.table('surekli_envanter_ozet').select('*').eq('magaza_kodu', str(magaza_kodu)).eq('envanter_tarihi', onceki).execute()
-        return pd.DataFrame(r.data) if r.data else None
-    except:
-        return None
-
-def get_magaza_gecmis(supabase_client, magaza_kodu, hafta=4):
-    """Son N hafta geçmişi"""
-    try:
-        r = supabase_client.table('surekli_envanter_ozet').select('*').eq('magaza_kodu', str(magaza_kodu)).order('envanter_tarihi', desc=True).limit(hafta * 3).execute()
-        return pd.DataFrame(r.data) if r.data else None
-    except:
-        return None
+def hesapla_bolge_ozeti(df):
+    """Bölge özeti - top10 ile aynı"""
+    return hesapla_top10(df)
