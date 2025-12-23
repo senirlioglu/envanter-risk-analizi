@@ -958,3 +958,201 @@ def detect_fire_manipulasyon(df):
 def hesapla_bolge_ozeti(df):
     """Bölge özeti - top10 ile aynı"""
     return hesapla_top10(df)
+
+
+# ==================== İÇ HIRSIZLIK TESPİTİ ====================
+
+def detect_ic_hirsizlik_surekli(df):
+    """
+    SÜREKLİ ENVANTER İÇ HIRSIZLIK TESPİTİ:
+    - Fark Miktarı < 0 (açık var)
+    - İptal Satır Tutarı > 0 (iptal yapılmış)
+    - |Fark Tutarı| ≈ İptal Satır Tutarı ise YÜKSEK RİSK
+    - Tam eşitse "ÇOK YÜKSEK" risk
+
+    Returns: DataFrame with suspected internal theft items
+    """
+    results = []
+    magaza_adi_col = get_magaza_adi_col(df)
+
+    for idx, row in df.iterrows():
+        # Gerekli kolonlar
+        fark_miktar = float(row.get('Fark Miktarı', 0) or 0)
+        fark_tutar = float(row.get('Fark Tutarı', 0) or 0)
+        iptal_tutar = abs(float(row.get('İptal Satır Tutarı', 0) or 0))
+
+        # Açık olmalı (negatif fark)
+        if fark_miktar >= 0 or fark_tutar >= 0:
+            continue
+
+        # İptal olmalı
+        if iptal_tutar <= 0:
+            continue
+
+        # |Fark| ile İptal karşılaştır
+        fark_mutlak = abs(fark_tutar)
+        fark_iptal = abs(fark_mutlak - iptal_tutar)
+
+        # Risk seviyesi belirleme
+        if fark_iptal == 0:
+            risk = "ÇOK YÜKSEK"
+            esitlik = "TAM EŞİT"
+        elif fark_iptal <= 5:
+            risk = "YÜKSEK"
+            esitlik = "YAKIN (±5 TL)"
+        elif fark_iptal <= 20:
+            risk = "ORTA"
+            esitlik = "YAKIN (±20 TL)"
+        elif fark_iptal <= 50:
+            risk = "DÜŞÜK-ORTA"
+            esitlik = f"FARK: {fark_iptal:.0f} TL"
+        else:
+            continue  # 50 TL'den fazla fark varsa atla
+
+        results.append({
+            'Mağaza Kodu': row.get('Mağaza Kodu', ''),
+            'Mağaza Adı': row.get(magaza_adi_col, '') if magaza_adi_col else '',
+            'Malzeme Kodu': str(row.get('Malzeme Kodu', '')),
+            'Ürün': str(row.get('Malzeme Tanımı', ''))[:40],
+            'Kategori': detect_kategori(row),
+            'Fark Miktarı': fark_miktar,
+            'Fark Tutarı': f"{fark_tutar:,.0f} TL",
+            'İptal Tutarı': f"{iptal_tutar:,.0f} TL",
+            'Fark': f"{fark_iptal:,.0f} TL",
+            'Durum': esitlik,
+            'Risk': risk,
+            'Kamera Kontrol': ''  # Sonra doldurulacak
+        })
+
+    result_df = pd.DataFrame(results)
+
+    if len(result_df) > 0:
+        # Duplicate temizleme
+        result_df = result_df.drop_duplicates(subset=['Mağaza Kodu', 'Malzeme Kodu'], keep='first')
+
+        # Risk sıralaması
+        risk_order = {'ÇOK YÜKSEK': 0, 'YÜKSEK': 1, 'ORTA': 2, 'DÜŞÜK-ORTA': 3}
+        result_df['_risk_sort'] = result_df['Risk'].map(risk_order)
+        result_df = result_df.sort_values(['_risk_sort', 'Fark Tutarı'], ascending=[True, True])
+        result_df = result_df.drop('_risk_sort', axis=1)
+
+    return result_df
+
+
+def enrich_ic_hirsizlik_with_camera(ic_df, iptal_data_func, magaza_kodu, kamera_gun=15):
+    """
+    İç hırsızlık tablosuna kamera kontrol bilgisi ekler
+
+    Args:
+        ic_df: detect_ic_hirsizlik_surekli sonucu DataFrame
+        iptal_data_func: get_iptal_timestamps_for_magaza fonksiyonu (app.py'den)
+        magaza_kodu: Mağaza kodu
+        kamera_gun: Geriye dönük kaç gün bakılacağı
+    """
+    if ic_df.empty:
+        return ic_df
+
+    from datetime import timedelta
+    kamera_limit = datetime.now() - timedelta(days=kamera_gun)
+
+    # Malzeme kodlarını topla
+    malzeme_kodlari = ic_df['Malzeme Kodu'].astype(str).tolist()
+
+    # İptal verisi çek
+    try:
+        iptal_data = iptal_data_func(str(magaza_kodu), malzeme_kodlari)
+    except:
+        return ic_df
+
+    if not iptal_data:
+        return ic_df
+
+    # Kamera kontrol bilgisi ekle
+    kamera_kontrol = []
+    for _, row in ic_df.iterrows():
+        malzeme_kodu = str(row['Malzeme Kodu'])
+
+        if malzeme_kodu not in iptal_data:
+            kamera_kontrol.append('')
+            continue
+
+        iptaller = iptal_data[malzeme_kodu]
+        son_15_gun = []
+
+        for iptal in iptaller:
+            tarih_str = str(iptal.get('tarih', ''))
+            try:
+                for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y']:
+                    try:
+                        tarih = datetime.strptime(tarih_str.split()[0], fmt)
+                        break
+                    except:
+                        continue
+                else:
+                    continue
+
+                if tarih >= kamera_limit:
+                    son_15_gun.append({**iptal, 'tarih_dt': tarih})
+            except:
+                pass
+
+        if not son_15_gun:
+            kamera_kontrol.append('')
+            continue
+
+        # Tarihe göre sırala
+        son_15_gun_sorted = sorted(son_15_gun, key=lambda x: x['tarih_dt'], reverse=True)
+
+        detaylar = []
+        for iptal in son_15_gun_sorted[:3]:  # En fazla 3 kayıt
+            tarih = iptal['tarih_dt'].strftime('%d.%m')
+            saat = str(iptal.get('saat', ''))[:5]
+            kasa_no = str(iptal.get('kasa_no', '')).replace('.0', '').strip()
+            kasa_str = f"K{kasa_no}" if kasa_no and kasa_no != 'nan' else ""
+            detaylar.append(f"{tarih} {saat} {kasa_str}".strip())
+
+        kamera_kontrol.append("✅ KAMERA BAK " + " | ".join(detaylar))
+
+    ic_df = ic_df.copy()
+    ic_df['Kamera Kontrol'] = kamera_kontrol
+
+    return ic_df
+
+
+def create_ic_hirsizlik_excel(ic_df, magaza_kodu, magaza_adi=''):
+    """
+    İç hırsızlık raporu için Excel dosyası oluşturur
+    Parçalı envanterdeki formata benzer
+    """
+    import io
+
+    output = io.BytesIO()
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Ana sayfa
+        if not ic_df.empty:
+            # Görüntü için sütun düzenle
+            display_df = ic_df.copy()
+
+            # Sütun sıralaması
+            cols_order = ['Mağaza Kodu', 'Mağaza Adı', 'Malzeme Kodu', 'Ürün', 'Kategori',
+                         'Fark Miktarı', 'Fark Tutarı', 'İptal Tutarı', 'Fark', 'Durum',
+                         'Risk', 'Kamera Kontrol']
+            available_cols = [c for c in cols_order if c in display_df.columns]
+            display_df = display_df[available_cols]
+
+            display_df.to_excel(writer, sheet_name='İç Hırsızlık Şüphelileri', index=False)
+
+            # Risk özeti
+            if 'Risk' in ic_df.columns:
+                ozet = ic_df['Risk'].value_counts().reset_index()
+                ozet.columns = ['Risk Seviyesi', 'Ürün Sayısı']
+                ozet.to_excel(writer, sheet_name='Özet', index=False)
+        else:
+            # Boş DataFrame
+            pd.DataFrame({'Sonuç': ['İç hırsızlık şüphelisi ürün bulunamadı']}).to_excel(
+                writer, sheet_name='İç Hırsızlık Şüphelileri', index=False
+            )
+
+    output.seek(0)
+    return output.getvalue()

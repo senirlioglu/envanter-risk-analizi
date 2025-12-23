@@ -25,10 +25,13 @@ try:
         analiz_fire_yazmama, analiz_kronik_acik, analiz_sayim_atlama,
         analiz_iptal_artis, analiz_yuvarlak_sayi, analiz_anormal_miktar,
         # Supabase fonksiyonları
-        prepare_detay_kayitlar, save_detay_to_supabase, 
+        prepare_detay_kayitlar, save_detay_to_supabase,
         get_onceki_envanter, get_magaza_onceki_kayitlar,
         # Eski uyumluluk
-        detect_yuvarlak_sayi, detect_anormal_miktar
+        detect_yuvarlak_sayi, detect_anormal_miktar,
+        # İç Hırsızlık fonksiyonları
+        detect_ic_hirsizlik_surekli, enrich_ic_hirsizlik_with_camera,
+        create_ic_hirsizlik_excel
     )
     SUREKLI_MODULE_LOADED = True
 except ImportError as e:
@@ -4424,7 +4427,7 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                 pass
         
         # Alt sekmeler
-        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 SM/BS Analizi", "📋 Sayım Disiplini", "🚨 Risk Analizi"])
+        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 SM/BS Analizi", "📋 Sayım Disiplini", "🚨 Risk Analizi", "🔒 İç Hırsızlık"])
         
         with surekli_tabs[0]:  # ÖZET
             st.subheader("📊 Genel Özet")
@@ -4585,6 +4588,82 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                         st.dataframe(pd.DataFrame(detay_list), use_container_width=True, hide_index=True)
                     else:
                         st.info("Bu kriterde sorun tespit edilmedi veya önceki veri bekleniyor")
+
+        with surekli_tabs[5]:  # İÇ HIRSIZLIK
+            st.subheader("🔒 İç Hırsızlık Analizi")
+            st.caption("Fark + Satır İptali = 0 olan ürünler (Parçalı envanterdeki mantık)")
+
+            # İç hırsızlık tespiti
+            ic_hirsizlik_df = detect_ic_hirsizlik_surekli(df_surekli)
+
+            # Tek mağaza ise kamera entegrasyonu yap
+            if len(magazalar) == 1:
+                magaza_kodu = str(magazalar[0])
+                try:
+                    ic_hirsizlik_df = enrich_ic_hirsizlik_with_camera(
+                        ic_hirsizlik_df,
+                        get_iptal_timestamps_for_magaza,
+                        magaza_kodu,
+                        kamera_gun=15
+                    )
+                except Exception as e:
+                    st.warning(f"⚠️ Kamera entegrasyonu atlandı: {str(e)[:50]}")
+
+            if not ic_hirsizlik_df.empty:
+                # Risk dağılımı
+                col1, col2, col3, col4 = st.columns(4)
+                risk_counts = ic_hirsizlik_df['Risk'].value_counts()
+
+                with col1:
+                    cnt = risk_counts.get('ÇOK YÜKSEK', 0)
+                    st.metric("🔴 ÇOK YÜKSEK", cnt)
+                with col2:
+                    cnt = risk_counts.get('YÜKSEK', 0)
+                    st.metric("🟠 YÜKSEK", cnt)
+                with col3:
+                    cnt = risk_counts.get('ORTA', 0)
+                    st.metric("🟡 ORTA", cnt)
+                with col4:
+                    cnt = risk_counts.get('DÜŞÜK-ORTA', 0)
+                    st.metric("🟢 DÜŞÜK-ORTA", cnt)
+
+                st.markdown("---")
+                st.markdown(f"### 🚨 Şüpheli Ürünler ({len(ic_hirsizlik_df)} adet)")
+
+                # Görüntüleme için sütunları seç
+                display_cols = ['Ürün', 'Kategori', 'Fark Tutarı', 'İptal Tutarı', 'Durum', 'Risk', 'Kamera Kontrol']
+                if len(magazalar) > 1:
+                    display_cols = ['Mağaza Kodu', 'Mağaza Adı'] + display_cols
+                available_display_cols = [c for c in display_cols if c in ic_hirsizlik_df.columns]
+
+                st.dataframe(
+                    ic_hirsizlik_df[available_display_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400
+                )
+
+                # Excel indirme butonu
+                st.markdown("---")
+                if len(magazalar) == 1:
+                    magaza_kodu = str(magazalar[0])
+                    magaza_adi_col = 'Mağaza Adı' if 'Mağaza Adı' in df_surekli.columns else 'Mağaza Tanım' if 'Mağaza Tanım' in df_surekli.columns else None
+                    magaza_adi = df_surekli[magaza_adi_col].iloc[0] if magaza_adi_col else ''
+                else:
+                    magaza_kodu = "TOPLU"
+                    magaza_adi = f"{len(magazalar)} Mağaza"
+
+                excel_data = create_ic_hirsizlik_excel(ic_hirsizlik_df, magaza_kodu, magaza_adi)
+                st.download_button(
+                    label="📥 Excel İndir (İç Hırsızlık Raporu)",
+                    data=excel_data,
+                    file_name=f"ic_hirsizlik_surekli_{magaza_kodu}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.success("✅ İç hırsızlık şüphelisi ürün bulunamadı!")
+                st.info("Fark + Satır İptali ≈ 0 olan ürün tespit edilmedi.")
+
     else:
         # Dosya yüklenmemiş - Supabase özet göster
         st.info("📊 Sürekli envanter dosyası yükleyin veya aşağıdan Supabase özetini görüntüleyin")
