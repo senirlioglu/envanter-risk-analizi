@@ -60,16 +60,23 @@ RISK_WEIGHTS = {
 
 def detect_envanter_type(df):
     """Sürekli mi parçalı mı algılar"""
+    # 1. 'Depolama Koşulu Grubu' içinde 'Sürekli' yazıyorsa → sürekli
     if 'Depolama Koşulu Grubu' in df.columns:
         if df['Depolama Koşulu Grubu'].astype(str).str.contains('Sürekli', case=False, na=False).any():
             return 'surekli'
-    if 'Önceki Fark Miktarı' in df.columns:
-        return 'parcali'
+
+    # 2. 'Depolama Koşulu' içinde sürekli envanter kategorileri varsa → sürekli
+    #    (Bu kontrol 'Önceki Fark Miktarı' kontrolünden ÖNCE yapılmalı!)
     if 'Depolama Koşulu' in df.columns:
         kosullar = set(df['Depolama Koşulu'].dropna().unique())
         surekli_kosullar = {'Et-Tavuk', 'Ekmek', 'Meyve/Sebz'}
         if kosullar.issubset(surekli_kosullar) or kosullar & surekli_kosullar:
             return 'surekli'
+
+    # 3. 'Önceki Fark Miktarı' kolonu varsa ve yukarıdaki koşullar sağlanmadıysa → parçalı
+    if 'Önceki Fark Miktarı' in df.columns:
+        return 'parcali'
+
     return 'parcali'
 
 def get_magaza_adi_col(df):
