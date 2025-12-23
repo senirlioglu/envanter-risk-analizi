@@ -14,16 +14,19 @@ from supabase import create_client, Client
 # Sürekli Envanter Modülü
 try:
     from surekli_envanter_module import (
-        detect_envanter_type, hesapla_kategori_ozet, hesapla_surekli_risk_skoru,
+        detect_envanter_type, hesapla_kategori_ozet, hesapla_risk_skoru,
         hesapla_sayim_disiplini, hesapla_bolge_ozeti, detect_yuvarlak_sayi,
-        detect_anormal_miktar, get_sayilmasi_gereken_urunler,
+        detect_anormal_miktar, get_sayilmasi_gereken_urunler, detect_sayilmayan_urunler,
         get_sm_magaza_sayisi, get_bs_magaza_sayisi, get_sm_list, get_bs_list,
-        get_magazalar_by_sm, get_magazalar_by_bs, SM_BS_MAGAZA, SEGMENT_URUN,
-        hesapla_tum_sm_risk, hesapla_tum_bs_risk, hesapla_urun_bolge_median, detect_median_sapma
+        get_magazalar_by_sm, get_magazalar_by_bs, get_magaza_bilgi,
+        SM_BS_MAGAZA, SEGMENT_URUN,
+        hesapla_tum_sm_risk, hesapla_tum_bs_risk, hesapla_urun_bolge_median,
+        prepare_surekli_kayit, save_surekli_to_supabase, get_onceki_hafta_verisi
     )
     SUREKLI_MODULE_LOADED = True
-except ImportError:
+except ImportError as e:
     SUREKLI_MODULE_LOADED = False
+    print(f"Sürekli modül yüklenemedi: {e}")
 
 # Mobil uyumlu sayfa ayarı
 st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon="📊")
@@ -4376,6 +4379,19 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
         df_surekli = st.session_state['df_surekli']
         magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
         
+        # ===== SUPABASE'E KAYIT =====
+        with st.spinner("Veritabanına kaydediliyor..."):
+            try:
+                records = prepare_surekli_kayit(df_surekli)
+                if records:
+                    inserted, skipped = save_surekli_to_supabase(supabase, records)
+                    if inserted > 0:
+                        st.success(f"💾 {inserted} kayıt eklendi ({len(magazalar)} mağaza × {len(set(r['kategori'] for r in records))} kategori)")
+                    elif skipped > 0:
+                        st.info(f"⏭️ Tüm kayıtlar zaten mevcut")
+            except Exception as e:
+                st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:50]}")
+        
         # Alt sekmeler
         surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon"])
         
@@ -4406,9 +4422,12 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                 magaza = magazalar[0]
                 magaza_adi_col = 'Mağaza Adı' if 'Mağaza Adı' in df_surekli.columns else 'Mağaza Tanım' if 'Mağaza Tanım' in df_surekli.columns else None
                 magaza_adi = df_surekli[magaza_adi_col].iloc[0] if magaza_adi_col else ''
+                magaza_bilgi = get_magaza_bilgi(str(magaza))
                 
                 st.subheader(f"🏪 {magaza} - {magaza_adi}")
-                risk = hesapla_surekli_risk_skoru(df_surekli)
+                st.caption(f"SM: {magaza_bilgi['sm']} | BS: {magaza_bilgi['bs']}")
+                
+                risk = hesapla_risk_skoru(df_surekli)
                 
                 col1, col2 = st.columns([1, 3])
                 with col1:
@@ -4421,9 +4440,21 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                     """, unsafe_allow_html=True)
                 
                 with col2:
-                    st.markdown("**Risk Detayları:**")
-                    risk_items = [f"• {k.replace('_', ' ').title()}: {v['puan']}/{v['max']}" for k, v in risk['detaylar'].items() if v['puan'] > 0]
-                    st.write("\n".join(risk_items) if risk_items else "✅ Önemli risk yok")
+                    st.markdown("**📋 Risk Detayları:**")
+                    
+                    # Detaylı risk tablosu
+                    risk_rows = []
+                    for key, val in risk['detaylar'].items():
+                        status = "🔴" if val['puan'] >= val['max'] * 0.7 else "🟡" if val['puan'] > 0 else "✅"
+                        aciklama = val.get('aciklama', '')
+                        risk_rows.append({
+                            '': status,
+                            'Kriter': key.replace('_', ' ').title(),
+                            'Puan': f"{val['puan']}/{val['max']}",
+                            'Açıklama': aciklama
+                        })
+                    
+                    st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
             
             elif len(magazalar) > 1:
                 st.markdown("---")
