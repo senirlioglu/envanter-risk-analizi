@@ -206,15 +206,21 @@ def detect_sayilmayan_urunler(df, magaza_kodu, blokajli=None):
 
 # ==================== RİSK SKORU HESAPLAMA ====================
 
-def hesapla_risk_skoru(df, df_onceki=None, urun_medianlar=None, blokajli=None):
-    """Sürekli envanter risk skorunu hesaplar - Toplam 97 puan"""
+def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli=None):
+    """
+    Sürekli envanter risk skorunu hesaplar - Toplam 97 puan
+    Her kriter için detaylı mağaza+ürün listesi döndürür
+    """
     magaza_kodu = str(df['Mağaza Kodu'].iloc[0]) if 'Mağaza Kodu' in df.columns else None
+    magaza_adi_col = 'Mağaza Adı' if 'Mağaza Adı' in df.columns else 'Mağaza Tanım' if 'Mağaza Tanım' in df.columns else None
+    magaza_adi = df[magaza_adi_col].iloc[0] if magaza_adi_col else ''
+    
     detaylar = {}
     toplam_puan = 0
     
     # 1. BÖLGE SAPMA (20p)
     sapma_puan = 0
-    sapma_urunler = []
+    sapma_detay = []  # Detaylı liste
     if urun_medianlar:
         for _, row in df.iterrows():
             kod = str(row.get('Malzeme Kodu', ''))
@@ -227,80 +233,180 @@ def hesapla_risk_skoru(df, df_onceki=None, urun_medianlar=None, blokajli=None):
                     if satis > MIN_SATIS_HASILATI:
                         magaza_oran = (fark + fire) / satis * 100
                         if magaza_oran > median * 1.5:
-                            sapma_urunler.append(str(row.get('Malzeme Tanımı', kod))[:30])
+                            sapma_detay.append({
+                                'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                                'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+                                'Ürün': str(row.get('Malzeme Tanımı', kod))[:30],
+                                'Oran': f"%{magaza_oran:.1f}",
+                                'Median': f"%{median:.1f}",
+                                'Kat': f"{magaza_oran/median:.1f}x"
+                            })
         
-        cnt = len(sapma_urunler)
+        cnt = len(sapma_detay)
         sapma_puan = 20 if cnt >= 15 else 15 if cnt >= 10 else 10 if cnt >= 5 else 5 if cnt >= 2 else 0
     
-    detaylar['bolge_sapma'] = {'puan': sapma_puan, 'max': 20, 'aciklama': f"{len(sapma_urunler)} ürün median üstü", 'urunler': sapma_urunler[:5]}
+    detaylar['bolge_sapma'] = {
+        'puan': sapma_puan, 'max': 20, 
+        'aciklama': f"{len(sapma_detay)} ürün median üstü",
+        'detay': sapma_detay
+    }
     toplam_puan += sapma_puan
     
     # 2. SATIR İPTALİ (12p)
+    iptal_detay = []
+    if 'İptal Satır Tutarı' in df.columns:
+        df_iptal = df[df['İptal Satır Tutarı'] != 0].copy()
+        for _, row in df_iptal.iterrows():
+            iptal_detay.append({
+                'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+                'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                'İptal Tutarı': f"{abs(row.get('İptal Satır Tutarı', 0)):,.0f} TL"
+            })
+    
     iptal_tutar = abs(df['İptal Satır Tutarı'].sum()) if 'İptal Satır Tutarı' in df.columns else 0
     iptal_puan = 12 if iptal_tutar > 1500 else 8 if iptal_tutar > 500 else 4 if iptal_tutar > 100 else 0
-    detaylar['satir_iptali'] = {'puan': iptal_puan, 'max': 12, 'aciklama': f"{iptal_tutar:,.0f} TL iptal", 'tutar': iptal_tutar}
+    detaylar['satir_iptali'] = {
+        'puan': iptal_puan, 'max': 12, 
+        'aciklama': f"{iptal_tutar:,.0f} TL iptal",
+        'detay': iptal_detay
+    }
     toplam_puan += iptal_puan
     
     # 3. KRONİK AÇIK (10p)
     kronik_acik_puan = 0
-    kronik_acik_urunler = []
+    kronik_acik_detay = []
     veri_var = df_onceki is not None and not df_onceki.empty
     if veri_var:
         fark_col = 'Fark Miktarı' if 'Fark Miktarı' in df.columns else 'Fark Tutarı'
         if fark_col in df.columns and fark_col in df_onceki.columns:
-            cur_neg = set(df[df[fark_col] < 0]['Malzeme Kodu'].astype(str))
-            prev_neg = set(df_onceki[df_onceki[fark_col] < 0]['Malzeme Kodu'].astype(str))
-            kronik_acik_urunler = list(cur_neg & prev_neg)
-            cnt = len(kronik_acik_urunler)
+            cur_neg = df[df[fark_col] < 0][['Mağaza Kodu', 'Malzeme Kodu', 'Malzeme Tanımı', fark_col]].copy()
+            cur_neg['Malzeme Kodu'] = cur_neg['Malzeme Kodu'].astype(str)
+            prev_neg_codes = set(df_onceki[df_onceki[fark_col] < 0]['Malzeme Kodu'].astype(str))
+            
+            for _, row in cur_neg.iterrows():
+                if str(row['Malzeme Kodu']) in prev_neg_codes:
+                    kronik_acik_detay.append({
+                        'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                        'Mağaza Adı': magaza_adi,
+                        'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                        'Fark': f"{row.get(fark_col, 0):,.0f}",
+                        'Durum': '2+ hafta açık'
+                    })
+            
+            cnt = len(kronik_acik_detay)
             kronik_acik_puan = 10 if cnt >= 10 else 6 if cnt >= 5 else 3 if cnt >= 2 else 0
     
-    detaylar['kronik_acik'] = {'puan': kronik_acik_puan, 'max': 10, 'aciklama': f"{len(kronik_acik_urunler)} ürün 2+ hafta açık" if veri_var else "⏳ Geçmiş veri bekleniyor", 'veri_var': veri_var}
+    detaylar['kronik_acik'] = {
+        'puan': kronik_acik_puan, 'max': 10, 
+        'aciklama': f"{len(kronik_acik_detay)} ürün 2+ hafta açık" if veri_var else "⏳ Geçmiş veri bekleniyor",
+        'veri_var': veri_var,
+        'detay': kronik_acik_detay
+    }
     toplam_puan += kronik_acik_puan
     
     # 4. AİLE ANALİZİ (5p) - TODO
-    detaylar['aile_analizi'] = {'puan': 0, 'max': 5, 'aciklama': "Henüz aktif değil"}
+    detaylar['aile_analizi'] = {'puan': 0, 'max': 5, 'aciklama': "Henüz aktif değil", 'detay': []}
     
     # 5. KRONİK FİRE (8p)
     kronik_fire_puan = 0
-    kronik_fire_urunler = []
+    kronik_fire_detay = []
     if veri_var and 'Fire Miktarı' in df.columns and 'Fire Miktarı' in df_onceki.columns:
-        cur_fire = set(df[df['Fire Miktarı'] < 0]['Malzeme Kodu'].astype(str))
-        prev_fire = set(df_onceki[df_onceki['Fire Miktarı'] < 0]['Malzeme Kodu'].astype(str))
-        kronik_fire_urunler = list(cur_fire & prev_fire)
-        cnt = len(kronik_fire_urunler)
+        cur_fire = df[df['Fire Miktarı'] < 0][['Mağaza Kodu', 'Malzeme Kodu', 'Malzeme Tanımı', 'Fire Miktarı', 'Fire Tutarı']].copy()
+        cur_fire['Malzeme Kodu'] = cur_fire['Malzeme Kodu'].astype(str)
+        prev_fire_codes = set(df_onceki[df_onceki['Fire Miktarı'] < 0]['Malzeme Kodu'].astype(str))
+        
+        for _, row in cur_fire.iterrows():
+            if str(row['Malzeme Kodu']) in prev_fire_codes:
+                kronik_fire_detay.append({
+                    'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                    'Mağaza Adı': magaza_adi,
+                    'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                    'Fire': f"{abs(row.get('Fire Tutarı', 0)):,.0f} TL",
+                    'Durum': '2+ hafta fire'
+                })
+        
+        cnt = len(kronik_fire_detay)
         kronik_fire_puan = 8 if cnt >= 8 else 5 if cnt >= 4 else 2 if cnt >= 2 else 0
     
-    detaylar['kronik_fire'] = {'puan': kronik_fire_puan, 'max': 8, 'aciklama': f"{len(kronik_fire_urunler)} ürün 2+ hafta fire" if veri_var else "⏳ Geçmiş veri bekleniyor", 'veri_var': veri_var}
+    detaylar['kronik_fire'] = {
+        'puan': kronik_fire_puan, 'max': 8, 
+        'aciklama': f"{len(kronik_fire_detay)} ürün 2+ hafta fire" if veri_var else "⏳ Geçmiş veri bekleniyor",
+        'veri_var': veri_var,
+        'detay': kronik_fire_detay
+    }
     toplam_puan += kronik_fire_puan
     
     # 6. FİRE MANİPÜLASYONU (8p)
     fire_manip_df = detect_fire_manipulasyon(df)
-    cnt = len(fire_manip_df)
+    fire_manip_detay = []
+    for _, row in fire_manip_df.iterrows():
+        fire_manip_detay.append({
+            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+            'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+            'Fire': f"{abs(row.get('Fire Tutarı', 0)):,.0f} TL",
+            'Fark': f"{row.get('Fark Tutarı', 0):,.0f} TL",
+            'Durum': 'Fire var ama fazla çıkmış'
+        })
+    
+    cnt = len(fire_manip_detay)
     fire_manip_puan = 8 if cnt >= 5 else 5 if cnt >= 3 else 2 if cnt >= 1 else 0
-    detaylar['fire_manipulasyon'] = {'puan': fire_manip_puan, 'max': 8, 'aciklama': f"{cnt} üründe fire↑ açık↓"}
+    detaylar['fire_manipulasyon'] = {
+        'puan': fire_manip_puan, 'max': 8, 
+        'aciklama': f"{cnt} üründe fire↑ açık↓",
+        'detay': fire_manip_detay
+    }
     toplam_puan += fire_manip_puan
     
     # 7. SAYILMAYAN ÜRÜN (8p)
     sayilmayan_puan = 0
-    sayilmayan = []
+    sayilmayan_detay = []
     if magaza_kodu:
         sayilmayan = detect_sayilmayan_urunler(df, magaza_kodu, blokajli)
-        cnt = len(sayilmayan)
+        for u in sayilmayan:
+            sayilmayan_detay.append({
+                'Mağaza Kodu': magaza_kodu,
+                'Mağaza Adı': magaza_adi,
+                'Ürün': u['Malzeme Tanımı'][:30],
+                'Segment': u['Segment'],
+                'Durum': 'Sayılmamış'
+            })
+        
+        cnt = len(sayilmayan_detay)
         sayilmayan_puan = 8 if cnt >= 10 else 5 if cnt >= 5 else 2 if cnt >= 2 else 0
     
-    detaylar['sayilmayan_urun'] = {'puan': sayilmayan_puan, 'max': 8, 'aciklama': f"{len(sayilmayan)} ürün sayılmamış", 'urunler': [u['Malzeme Tanımı'] for u in sayilmayan[:5]]}
+    detaylar['sayilmayan_urun'] = {
+        'puan': sayilmayan_puan, 'max': 8, 
+        'aciklama': f"{len(sayilmayan_detay)} ürün sayılmamış",
+        'detay': sayilmayan_detay
+    }
     toplam_puan += sayilmayan_puan
     
     # 8. ANORMAL MİKTAR (10p)
     anormal_df = detect_anormal_miktar(df)
-    cnt = len(anormal_df)
+    anormal_detay = []
+    for _, row in anormal_df.iterrows():
+        anormal_detay.append({
+            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+            'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+            'Miktar': f"{row.get('Sayım Miktarı', 0):.0f}",
+            'Durum': '>50 kg/adet'
+        })
+    
+    cnt = len(anormal_detay)
     anormal_puan = 10 if cnt >= 5 else 6 if cnt >= 3 else 3 if cnt >= 1 else 0
-    detaylar['anormal_miktar'] = {'puan': anormal_puan, 'max': 10, 'aciklama': f"{cnt} üründe >50 kg/adet"}
+    detaylar['anormal_miktar'] = {
+        'puan': anormal_puan, 'max': 10, 
+        'aciklama': f"{cnt} üründe >50 kg/adet",
+        'detay': anormal_detay
+    }
     toplam_puan += anormal_puan
     
     # 9. TEKRAR MİKTAR (8p)
     tekrar_puan = 0
-    tekrar_urunler = []
+    tekrar_detay = []
     if veri_var and 'Sayım Miktarı' in df.columns and 'Sayım Miktarı' in df_onceki.columns:
         try:
             prev_dict = df_onceki.set_index('Malzeme Kodu')['Sayım Miktarı'].to_dict()
@@ -310,20 +416,46 @@ def hesapla_risk_skoru(df, df_onceki=None, urun_medianlar=None, blokajli=None):
                 if kod in prev_dict and pd.notna(miktar) and miktar > 0:
                     prev = prev_dict[kod]
                     if pd.notna(prev) and prev > 0 and abs(miktar - prev) / prev <= 0.03:
-                        tekrar_urunler.append(str(row.get('Malzeme Tanımı', kod))[:30])
-            cnt = len(tekrar_urunler)
+                        tekrar_detay.append({
+                            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+                            'Mağaza Adı': magaza_adi,
+                            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+                            'Bu Hafta': f"{miktar:.1f}",
+                            'Önceki': f"{prev:.1f}",
+                            'Durum': 'Aynı miktar'
+                        })
+            cnt = len(tekrar_detay)
             tekrar_puan = 8 if cnt >= 10 else 5 if cnt >= 5 else 2 if cnt >= 2 else 0
         except:
             pass
     
-    detaylar['tekrar_miktar'] = {'puan': tekrar_puan, 'max': 8, 'aciklama': f"{len(tekrar_urunler)} ürün aynı miktar" if veri_var else "⏳ Geçmiş veri bekleniyor", 'veri_var': veri_var}
+    detaylar['tekrar_miktar'] = {
+        'puan': tekrar_puan, 'max': 8, 
+        'aciklama': f"{len(tekrar_detay)} ürün aynı miktar" if veri_var else "⏳ Geçmiş veri bekleniyor",
+        'veri_var': veri_var,
+        'detay': tekrar_detay
+    }
     toplam_puan += tekrar_puan
     
     # 10. YUVARLAK SAYI (8p)
     yuvarlak_df = detect_yuvarlak_sayi(df)
-    yuvarlak_oran = len(yuvarlak_df) / max(len(df), 1)
+    yuvarlak_detay = []
+    for _, row in yuvarlak_df.iterrows():
+        yuvarlak_detay.append({
+            'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
+            'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+            'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
+            'Miktar': f"{row.get('Sayım Miktarı', 0):.0f}",
+            'Durum': 'Yuvarlak sayı (5,10,15...)'
+        })
+    
+    yuvarlak_oran = len(yuvarlak_detay) / max(len(df), 1)
     yuvarlak_puan = 8 if yuvarlak_oran > 0.35 else 5 if yuvarlak_oran > 0.20 else 2 if yuvarlak_oran > 0.10 else 0
-    detaylar['yuvarlak_sayi'] = {'puan': yuvarlak_puan, 'max': 8, 'aciklama': f"{len(yuvarlak_df)} ürün (%{yuvarlak_oran*100:.0f}) yuvarlak"}
+    detaylar['yuvarlak_sayi'] = {
+        'puan': yuvarlak_puan, 'max': 8, 
+        'aciklama': f"{len(yuvarlak_detay)} ürün (%{yuvarlak_oran*100:.0f}) yuvarlak",
+        'detay': yuvarlak_detay
+    }
     toplam_puan += yuvarlak_puan
     
     # Seviye
@@ -332,7 +464,19 @@ def hesapla_risk_skoru(df, df_onceki=None, urun_medianlar=None, blokajli=None):
     elif toplam_puan <= 75: seviye, emoji = 'riskli', '🟠'
     else: seviye, emoji = 'kritik', '🔴'
     
-    return {'toplam_puan': toplam_puan, 'max_puan': 97, 'seviye': seviye, 'emoji': emoji, 'detaylar': detaylar}
+    return {
+        'toplam_puan': toplam_puan, 
+        'max_puan': 97, 
+        'seviye': seviye, 
+        'emoji': emoji, 
+        'detaylar': detaylar
+    }
+
+
+def hesapla_risk_skoru(df, df_onceki=None, urun_medianlar=None, blokajli=None):
+    """Eski fonksiyon - geriye uyumluluk için"""
+    return hesapla_risk_skoru_detayli(df, df_onceki, urun_medianlar, blokajli)
+
 
 # ==================== BÖLGE ÖZETİ ====================
 
