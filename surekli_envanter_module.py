@@ -212,8 +212,22 @@ def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli
     Her kriter için detaylı mağaza+ürün listesi döndürür
     """
     magaza_kodu = str(df['Mağaza Kodu'].iloc[0]) if 'Mağaza Kodu' in df.columns else None
-    magaza_adi_col = 'Mağaza Adı' if 'Mağaza Adı' in df.columns else 'Mağaza Tanım' if 'Mağaza Tanım' in df.columns else None
-    magaza_adi = df[magaza_adi_col].iloc[0] if magaza_adi_col else ''
+    
+    # Mağaza adı kolonunu bul
+    if 'Mağaza Adı' in df.columns:
+        magaza_adi_col = 'Mağaza Adı'
+    elif 'Mağaza Tanım' in df.columns:
+        magaza_adi_col = 'Mağaza Tanım'
+    else:
+        magaza_adi_col = None
+    
+    magaza_adi = str(df[magaza_adi_col].iloc[0]) if magaza_adi_col else ''
+    
+    # Helper: Satırdan mağaza adı al
+    def get_magaza_adi(row):
+        if magaza_adi_col and magaza_adi_col in row.index:
+            return str(row[magaza_adi_col])
+        return magaza_adi
     
     detaylar = {}
     toplam_puan = 0
@@ -235,7 +249,7 @@ def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli
                         if magaza_oran > median * 1.5:
                             sapma_detay.append({
                                 'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-                                'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+                                'Mağaza Adı': get_magaza_adi(row),
                                 'Ürün': str(row.get('Malzeme Tanımı', kod))[:30],
                                 'Oran': f"%{magaza_oran:.1f}",
                                 'Median': f"%{median:.1f}",
@@ -259,7 +273,7 @@ def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli
         for _, row in df_iptal.iterrows():
             iptal_detay.append({
                 'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-                'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+                'Mağaza Adı': get_magaza_adi(row),
                 'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
                 'İptal Tutarı': f"{abs(row.get('İptal Satır Tutarı', 0)):,.0f} TL"
             })
@@ -343,7 +357,7 @@ def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli
     for _, row in fire_manip_df.iterrows():
         fire_manip_detay.append({
             'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-            'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+            'Mağaza Adı': get_magaza_adi(row),
             'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
             'Fire': f"{abs(row.get('Fire Tutarı', 0)):,.0f} TL",
             'Fark': f"{row.get('Fark Tutarı', 0):,.0f} TL",
@@ -389,7 +403,7 @@ def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli
     for _, row in anormal_df.iterrows():
         anormal_detay.append({
             'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-            'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+            'Mağaza Adı': get_magaza_adi(row),
             'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
             'Miktar': f"{row.get('Sayım Miktarı', 0):.0f}",
             'Durum': '>50 kg/adet'
@@ -443,7 +457,7 @@ def hesapla_risk_skoru_detayli(df, df_onceki=None, urun_medianlar=None, blokajli
     for _, row in yuvarlak_df.iterrows():
         yuvarlak_detay.append({
             'Mağaza Kodu': row.get('Mağaza Kodu', magaza_kodu),
-            'Mağaza Adı': row.get(magaza_adi_col, magaza_adi) if magaza_adi_col else '',
+            'Mağaza Adı': get_magaza_adi(row),
             'Ürün': str(row.get('Malzeme Tanımı', ''))[:30],
             'Miktar': f"{row.get('Sayım Miktarı', 0):.0f}",
             'Durum': 'Yuvarlak sayı (5,10,15...)'
