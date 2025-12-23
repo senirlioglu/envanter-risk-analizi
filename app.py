@@ -11,17 +11,24 @@ import json
 import os
 from supabase import create_client, Client
 
-# Sürekli Envanter Modülü
+# Sürekli Envanter Modülü v3
 try:
     from surekli_envanter_module import (
-        detect_envanter_type, hesapla_kategori_ozet, hesapla_risk_skoru,
-        hesapla_sayim_disiplini, hesapla_bolge_ozeti, detect_yuvarlak_sayi,
-        detect_anormal_miktar, get_sayilmasi_gereken_urunler, detect_sayilmayan_urunler,
-        get_sm_magaza_sayisi, get_bs_magaza_sayisi, get_sm_list, get_bs_list,
-        get_magazalar_by_sm, get_magazalar_by_bs, get_magaza_bilgi,
+        # Temel fonksiyonlar
+        detect_envanter_type, get_magaza_bilgi, get_sm_list, get_bs_list,
+        get_magazalar_by_sm, get_magazalar_by_bs,
         SM_BS_MAGAZA, SEGMENT_URUN,
-        hesapla_tum_sm_risk, hesapla_tum_bs_risk, hesapla_urun_bolge_median,
-        prepare_surekli_kayit, save_surekli_to_supabase, get_onceki_hafta_verisi
+        # Analiz fonksiyonları
+        hesapla_kategori_ozet, hesapla_risk_skoru, hesapla_sayim_disiplini,
+        hesapla_magaza_ozet, hesapla_sm_ozet, hesapla_top10, hesapla_bolge_ozeti,
+        # Detay analizleri
+        analiz_fire_yazmama, analiz_kronik_acik, analiz_sayim_atlama,
+        analiz_iptal_artis, analiz_yuvarlak_sayi, analiz_anormal_miktar,
+        # Supabase fonksiyonları
+        prepare_detay_kayitlar, save_detay_to_supabase, 
+        get_onceki_envanter, get_magaza_onceki_kayitlar,
+        # Eski uyumluluk
+        detect_yuvarlak_sayi, detect_anormal_miktar
     )
     SUREKLI_MODULE_LOADED = True
 except ImportError as e:
@@ -4381,33 +4388,43 @@ elif analysis_mode == "📦 Parçalı" and 'uploaded_df' in st.session_state and
 # ==================== SÜREKLİ ENVANTER MODU ====================
 elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
     st.markdown("## 🔄 Sürekli Envanter Analizi")
-    st.caption("Et-Tavuk, Ekmek, Meyve/Sebze haftalık envanter takibi")
-    
-    # Debug bilgisi
-    has_df_surekli = 'df_surekli' in st.session_state and st.session_state['df_surekli'] is not None
-    has_uploaded_df = 'uploaded_df' in st.session_state
-    uploaded_type = st.session_state.get('uploaded_type', 'yok')
+    st.caption("Et-Tavuk, Ekmek, Meyve/Sebze aylık envanter takibi")
     
     # Dosya yüklenmişse kullan
+    has_df_surekli = 'df_surekli' in st.session_state and st.session_state['df_surekli'] is not None
+    
     if has_df_surekli:
         df_surekli = st.session_state['df_surekli']
         magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
         
-        # ===== SUPABASE'E KAYIT =====
+        # Envanter dönemi
+        envanter_donemi = str(df_surekli['Envanter Dönemi'].iloc[0]) if 'Envanter Dönemi' in df_surekli.columns else ''
+        
+        # ===== SUPABASE'E DETAY KAYIT =====
         with st.spinner("Veritabanına kaydediliyor..."):
             try:
-                records = prepare_surekli_kayit(df_surekli)
+                records = prepare_detay_kayitlar(df_surekli)
                 if records:
-                    inserted, skipped = save_surekli_to_supabase(supabase, records)
+                    inserted, skipped = save_detay_to_supabase(supabase, records)
                     if inserted > 0:
-                        st.success(f"💾 {inserted} kayıt eklendi ({len(magazalar)} mağaza × {len(set(r['kategori'] for r in records))} kategori)")
+                        st.success(f"💾 {inserted} ürün kaydı eklendi ({len(magazalar)} mağaza)")
                     elif skipped > 0:
-                        st.info(f"⏭️ Tüm kayıtlar zaten mevcut")
+                        st.info(f"⏭️ Kayıtlar zaten mevcut")
             except Exception as e:
-                st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:50]}")
+                st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:100]}")
+        
+        # Önceki kayıtları çek (karşılaştırma için)
+        df_onceki = None
+        if magazalar:
+            try:
+                df_onceki = get_magaza_onceki_kayitlar(supabase, str(magazalar[0]), envanter_donemi)
+                if not df_onceki.empty:
+                    st.info(f"📊 Önceki {len(df_onceki)} kayıt ile karşılaştırılıyor")
+            except:
+                pass
         
         # Alt sekmeler
-        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon"])
+        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 SM/BS Analizi", "📋 Sayım Disiplini", "🚨 Risk Analizi"])
         
         with surekli_tabs[0]:  # ÖZET
             st.subheader("📊 Genel Özet")
@@ -4475,101 +4492,105 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
         
         with surekli_tabs[1]:  # TOP 10
             st.subheader("🏆 En Riskli Mağazalar ve Ürünler")
-            bolge_ozet = hesapla_bolge_ozeti(df_surekli)
+            top10 = hesapla_top10(df_surekli)
             
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### 🏪 Top 10 Riskli Mağaza")
-                if 'top10_magaza' in bolge_ozet and len(bolge_ozet['top10_magaza']) > 0:
-                    df_top = bolge_ozet['top10_magaza'][['Mağaza Kodu', 'Mağaza Adı', 'Toplam Kayıp', 'Oran']].copy()
+                if 'top10_magaza' in top10 and len(top10['top10_magaza']) > 0:
+                    df_top = top10['top10_magaza'][['Mağaza Kodu', 'Mağaza Adı', 'Kayıp', 'Oran', 'SM']].copy()
                     df_top['Oran'] = df_top['Oran'].apply(lambda x: f"%{x:.1f}")
-                    df_top['Toplam Kayıp'] = df_top['Toplam Kayıp'].apply(lambda x: f"{x:,.0f} TL")
+                    df_top['Kayıp'] = df_top['Kayıp'].apply(lambda x: f"{x:,.0f} TL")
                     st.dataframe(df_top, use_container_width=True, hide_index=True)
             
             with col2:
                 st.markdown("### 📉 Top 5 Açık Veren Ürün")
-                if 'top5_acik' in bolge_ozet and len(bolge_ozet['top5_acik']) > 0:
-                    st.dataframe(bolge_ozet['top5_acik'], use_container_width=True, hide_index=True)
+                if top10.get('top5_acik') is not None and len(top10['top5_acik']) > 0:
+                    df_acik = top10['top5_acik'].copy()
+                    df_acik['Fark'] = df_acik['Fark'].apply(lambda x: f"{x:,.0f} TL")
+                    st.dataframe(df_acik, use_container_width=True, hide_index=True)
                 
                 st.markdown("### 🔥 Top 5 Fire Yazılan Ürün")
-                if 'top5_fire' in bolge_ozet and len(bolge_ozet['top5_fire']) > 0:
-                    st.dataframe(bolge_ozet['top5_fire'], use_container_width=True, hide_index=True)
+                if top10.get('top5_fire') is not None and len(top10['top5_fire']) > 0:
+                    df_fire = top10['top5_fire'].copy()
+                    df_fire['Fire'] = df_fire['Fire'].apply(lambda x: f"{x:,.0f} TL")
+                    st.dataframe(df_fire, use_container_width=True, hide_index=True)
         
-        with surekli_tabs[2]:  # BÖLGE ANALİZİ
-            st.subheader("📈 SM/BS Risk Skorları")
-            view_mode = st.radio("Görünüm", ["SM Bazlı", "BS Bazlı"], horizontal=True, key="bolge_view")
+        with surekli_tabs[2]:  # SM/BS ANALİZİ
+            st.subheader("📈 SM/BS Özet")
             
-            if view_mode == "SM Bazlı":
-                sm_riskleri = hesapla_tum_sm_risk(df_surekli)
-                if sm_riskleri:
-                    sm_tablo = []
-                    for sr in sm_riskleri:
-                        sm_tablo.append({
-                            'SM': sr['sm'], 'Mağaza': sr['magaza_sayisi'],
-                            'Ort.Skor': f"{sr['ortalama_skor']:.0f}",
-                            '🔴': sr['kritik'], '🟠': sr['riskli'],
-                            '⚠️': sr['dikkat'], '✅': sr['normal']
-                        })
-                    st.dataframe(pd.DataFrame(sm_tablo), use_container_width=True, hide_index=True)
-            else:
-                bs_riskleri = hesapla_tum_bs_risk(df_surekli)
-                if bs_riskleri:
-                    bs_tablo = []
-                    for br in bs_riskleri:
-                        emoji = '🔴' if br['ortalama_skor'] > 50 else '🟠' if br['ortalama_skor'] > 35 else '⚠️' if br['ortalama_skor'] > 20 else '✅'
-                        bs_tablo.append({
-                            '': emoji, 'BS': br['bs'], 'Mağaza': br['magaza_sayisi'],
-                            'Ort.Skor': f"{br['ortalama_skor']:.0f}",
-                            '🔴': br['kritik'], '🟠': br['riskli']
-                        })
-                    st.dataframe(pd.DataFrame(bs_tablo), use_container_width=True, hide_index=True)
+            # SM Özet
+            st.markdown("### 👤 SM Bazlı Özet")
+            sm_ozet = hesapla_sm_ozet(df_surekli)
+            if len(sm_ozet) > 0:
+                sm_display = sm_ozet.copy()
+                sm_display['Fark'] = sm_display['Fark'].apply(lambda x: f"{x:,.0f}")
+                sm_display['Fire'] = sm_display['Fire'].apply(lambda x: f"{x:,.0f}")
+                sm_display['Satış'] = sm_display['Satış'].apply(lambda x: f"{x:,.0f}")
+                sm_display['Oran'] = sm_display['Oran'].apply(lambda x: f"%{x:.1f}")
+                st.dataframe(sm_display, use_container_width=True, hide_index=True)
         
         with surekli_tabs[3]:  # SAYIM DİSİPLİNİ
             st.subheader("📋 Sayım Disiplini Takibi")
-            st.caption("Her mağaza haftada 3 farklı kategoride sayım yapmalı")
+            st.caption("Her üründe ayda 4 sayım bekleniyor")
             
-            sm_list = get_sm_list()
-            sm_data = []
-            for sm in sm_list:
-                disiplin = hesapla_sayim_disiplini(df_surekli, sm=sm)
-                if disiplin:
-                    sm_data.append({
-                        'SM': sm, 'Mağaza': disiplin.get('magaza_sayisi', 0),
-                        'Beklenen': disiplin['toplam_beklenen'], 'Yapılan': disiplin['toplam_yapilan'],
-                        'Oran': f"%{disiplin['oran']:.0f}"
-                    })
-            if sm_data:
-                st.dataframe(pd.DataFrame(sm_data), use_container_width=True, hide_index=True)
-        
-        with surekli_tabs[4]:  # MANİPÜLASYON
-            st.subheader("⚠️ Manipülasyon Tespiti")
+            sayim = hesapla_sayim_disiplini(df_surekli)
             
-            col1, col2 = st.columns(2)
+            # Özet metrikler
+            col1, col2, col3 = st.columns(3)
             with col1:
-                st.markdown("### 🔢 Yuvarlak Sayı Girişleri")
-                yuvarlak_df = detect_yuvarlak_sayi(df_surekli)
-                if len(yuvarlak_df) > 0:
-                    st.warning(f"⚠️ {len(yuvarlak_df)} ürün şüpheli")
-                    display_cols = [c for c in ['Mağaza Kodu', 'Malzeme Tanımı', 'Sayım Miktarı'] if c in yuvarlak_df.columns]
-                    st.dataframe(yuvarlak_df[display_cols].head(20), use_container_width=True, hide_index=True)
-                else:
-                    st.success("✅ Yuvarlak sayı tespit edilmedi")
+                st.metric("Beklenen Sayım", sayim['beklenen_sayim'])
+            with col2:
+                eksik_urun = len(sayim['urunler'])
+                toplam_urun = len(df_surekli)
+                st.metric("Eksik Sayım", f"{eksik_urun}/{toplam_urun}")
+            with col3:
+                oran = (toplam_urun - eksik_urun) / max(toplam_urun, 1) * 100
+                st.metric("Tamamlanma", f"%{oran:.0f}")
+            
+            # Eksik sayım detayları
+            if sayim['urunler']:
+                st.markdown("### ⚠️ Eksik Sayım Yapılan Ürünler")
+                st.dataframe(pd.DataFrame(sayim['urunler']), use_container_width=True, hide_index=True)
+        
+        with surekli_tabs[4]:  # RİSK ANALİZİ
+            st.subheader("🚨 Risk Analizi")
+            
+            # Risk skoru hesapla
+            risk = hesapla_risk_skoru(df_surekli, df_onceki)
+            
+            # Özet
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                bg_color = '#ff4444' if risk['seviye']=='kritik' else '#ff8800' if risk['seviye']=='riskli' else '#ffcc00' if risk['seviye']=='dikkat' else '#44aa44'
+                st.markdown(f"""
+                <div style="text-align:center; padding:20px; background:{bg_color}; border-radius:10px;">
+                    <h2 style="color:white; margin:0;">{risk['emoji']} {risk['toplam_puan']}/{risk['max_puan']}</h2>
+                    <p style="color:white; margin:0;">{risk['seviye'].upper()}</p>
+                </div>
+                """, unsafe_allow_html=True)
             
             with col2:
-                st.markdown("### 📦 Anormal Yüksek Miktar")
-                anormal_df = detect_anormal_miktar(df_surekli)
-                if len(anormal_df) > 0:
-                    st.warning(f"⚠️ {len(anormal_df)} ürün anormal")
-                    display_cols = [c for c in ['Mağaza Kodu', 'Malzeme Tanımı', 'Sayım Miktarı'] if c in anormal_df.columns]
-                    st.dataframe(anormal_df[display_cols], use_container_width=True, hide_index=True)
-                else:
-                    st.success("✅ Anormal miktar tespit edilmedi")
+                st.markdown("**📋 Risk Kriterleri** *(Detay için tıklayın)*")
+            
+            # Expander'lı risk detayları
+            for key, val in risk['detaylar'].items():
+                status = "🔴" if val['puan'] >= val['max'] * 0.7 else "🟡" if val['puan'] > 0 else "✅"
+                kriter_adi = key.replace('_', ' ').title()
+                aciklama = val.get('aciklama', '')
+                detay_list = val.get('detay', [])
+                
+                with st.expander(f"{status} **{kriter_adi}**: {val['puan']}/{val['max']} - {aciklama}"):
+                    if detay_list:
+                        st.dataframe(pd.DataFrame(detay_list), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Bu kriterde sorun tespit edilmedi veya önceki veri bekleniyor")
     else:
         # Dosya yüklenmemiş - Supabase özet göster
         st.info("📊 Sürekli envanter dosyası yükleyin veya aşağıdan Supabase özetini görüntüleyin")
         
         try:
-            result = supabase.table('surekli_envanter_ozet').select('*').order('envanter_tarihi', desc=True).limit(500).execute()
+            result = supabase.table('surekli_envanter_detay').select('*').order('yukleme_zamani', desc=True).limit(1000).execute()
             
             if result.data:
                 df_ozet = pd.DataFrame(result.data)
