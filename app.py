@@ -3732,7 +3732,7 @@ elif analysis_mode == "🌍 GM Özet":
                     - 🏪 Tüm Mağazalar (Risk puanına göre sıralı)
                     """)
 
-elif uploaded_file is not None:
+elif uploaded_file is not None and analysis_mode != "🔄 Sürekli Envanter":
     try:
         xl = pd.ExcelFile(uploaded_file)
         sheet_names = xl.sheet_names
