@@ -1135,7 +1135,9 @@ with col_refresh:
             st.rerun()
 
 # Analiz modu belirleme
-analysis_mode = None
+if 'analysis_mode' not in st.session_state:
+    st.session_state['analysis_mode'] = None
+
 uploaded_file = None
 
 if manual_mode == "📁 Dosya Yükle":
@@ -1158,25 +1160,34 @@ if manual_mode == "📁 Dosya Yükle":
             detected_type = detect_envanter_type(df_raw_check)
             
             if detected_type == 'surekli':
-                analysis_mode = "🔄 Sürekli Envanter"
-                st.success(f"✅ **Sürekli Envanter** algılandı: {len(df_raw_check)} satır")
+                st.session_state['analysis_mode'] = "🔄 Sürekli Envanter"
                 st.session_state['df_surekli'] = df_raw_check
+                st.success(f"✅ **Sürekli Envanter** algılandı: {len(df_raw_check)} satır")
             else:
                 # Parçalı envanter - alt mod seçimi
                 parcali_mode = st.radio("📊 Analiz Türü", ["🏪 Tek Mağaza", "🌍 Bölge Özeti"], horizontal=True)
-                analysis_mode = parcali_mode
+                st.session_state['analysis_mode'] = parcali_mode
                 st.success(f"✅ **Parçalı Envanter** algılandı: {len(df_raw_check)} satır")
         except Exception as e:
             st.error(f"Dosya okuma hatası: {str(e)}")
             
     elif uploaded_file is not None:
         # Modül yüklü değilse eski sisteme devam
-        analysis_mode = "🏪 Tek Mağaza"
+        st.session_state['analysis_mode'] = "🏪 Tek Mağaza"
+    
+    # uploaded_file yoksa session state'i temizle
+    if uploaded_file is None:
+        st.session_state['analysis_mode'] = None
+        if 'df_surekli' in st.session_state:
+            del st.session_state['df_surekli']
         
 elif manual_mode == "👔 SM Özet":
-    analysis_mode = "👔 SM Özet"
+    st.session_state['analysis_mode'] = "👔 SM Özet"
 elif manual_mode == "🌍 GM Özet":
-    analysis_mode = "🌍 GM Özet"
+    st.session_state['analysis_mode'] = "🌍 GM Özet"
+
+# Session state'ten analysis_mode'u al
+analysis_mode = st.session_state.get('analysis_mode')
 
 
 def analyze_inventory(df):
