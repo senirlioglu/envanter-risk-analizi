@@ -4505,8 +4505,8 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                         sm_tablo.append({
                             'SM': sr['sm'], 'Mağaza': sr['magaza_sayisi'],
                             'Ort.Skor': f"{sr['ortalama_skor']:.0f}",
-                            '🔴': sr['kritik_sayisi'], '🟠': sr['riskli_sayisi'],
-                            '⚠️': sr['dikkat_sayisi'], '✅': sr['normal_sayisi']
+                            '🔴': sr['kritik'], '🟠': sr['riskli'],
+                            '⚠️': sr['dikkat'], '✅': sr['normal']
                         })
                     st.dataframe(pd.DataFrame(sm_tablo), use_container_width=True, hide_index=True)
             else:
@@ -4518,7 +4518,7 @@ elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
                         bs_tablo.append({
                             '': emoji, 'BS': br['bs'], 'Mağaza': br['magaza_sayisi'],
                             'Ort.Skor': f"{br['ortalama_skor']:.0f}",
-                            '🔴': br['kritik_sayisi'], '🟠': br['riskli_sayisi']
+                            '🔴': br['kritik'], '🟠': br['riskli']
                         })
                     st.dataframe(pd.DataFrame(bs_tablo), use_container_width=True, hide_index=True)
         
