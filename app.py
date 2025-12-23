@@ -1036,30 +1036,42 @@ def get_available_sms_cached():
 
 @st.cache_data(ttl=300)
 def get_envanter_tarihleri_by_donem(donemler_tuple):
-    """Seçilen dönemlerdeki envanter tarihlerini getir - CACHED"""
+    """Seçilen dönemlerdeki envanter tarihlerini getir - MV'DEN"""
     try:
         if not donemler_tuple:
             return []
         donemler = list(donemler_tuple)
         
-        # Ana tablodan distinct tarihler çek (VIEW yerine - daha hızlı)
-        query = supabase.table('envanter_veri').select('envanter_tarihi').in_('envanter_donemi', donemler).limit(5000)
+        # MV'den min/max tarihleri al - DOĞRU VE HIZLI
+        query = supabase.table('mv_magaza_ozet').select('min_envanter_tarihi,max_envanter_tarihi').in_('envanter_donemi', donemler)
         result = query.execute()
         
         if result.data:
-            tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
-            tarih_dates = []
-            for t in tarihler:
-                try:
-                    if isinstance(t, str):
-                        tarih_dates.append(pd.to_datetime(t).date())
-                    elif hasattr(t, 'date'):
-                        tarih_dates.append(t.date())
-                    else:
-                        tarih_dates.append(t)
-                except:
-                    pass
-            return sorted(set(tarih_dates))
+            tarih_dates = set()
+            for r in result.data:
+                # Min tarih
+                min_t = r.get('min_envanter_tarihi')
+                if min_t:
+                    try:
+                        if isinstance(min_t, str):
+                            tarih_dates.add(pd.to_datetime(min_t).date())
+                        elif hasattr(min_t, 'date'):
+                            tarih_dates.add(min_t.date())
+                    except:
+                        pass
+                
+                # Max tarih
+                max_t = r.get('max_envanter_tarihi')
+                if max_t:
+                    try:
+                        if isinstance(max_t, str):
+                            tarih_dates.add(pd.to_datetime(max_t).date())
+                        elif hasattr(max_t, 'date'):
+                            tarih_dates.add(max_t.date())
+                    except:
+                        pass
+            
+            return sorted(tarih_dates)
     except Exception as e:
         pass
     return []
