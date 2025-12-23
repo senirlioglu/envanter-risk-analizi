@@ -679,12 +679,23 @@ def hesapla_bolge_ozeti(df):
     """Bölge özeti - Top 10 mağaza, Top 5 ürün analizleri"""
     sonuc = {}
     
+    # Mağaza adı kolonunu bul
+    magaza_adi_col = 'Mağaza Adı' if 'Mağaza Adı' in df.columns else 'Mağaza Tanım' if 'Mağaza Tanım' in df.columns else None
+    
     # Top 10 Riskli Mağaza
     if 'Mağaza Kodu' in df.columns:
-        mag_ozet = df.groupby('Mağaza Kodu').agg({
-            'Fark Tutarı': 'sum', 'Fire Tutarı': 'sum', 
-            'Satış Hasılatı': 'sum', 'Mağaza Adı': 'first'
-        }).reset_index()
+        agg_dict = {'Fark Tutarı': 'sum', 'Fire Tutarı': 'sum', 'Satış Hasılatı': 'sum'}
+        if magaza_adi_col:
+            agg_dict[magaza_adi_col] = 'first'
+        
+        mag_ozet = df.groupby('Mağaza Kodu').agg(agg_dict).reset_index()
+        
+        # Kolon isimlerini standartlaştır
+        if magaza_adi_col and magaza_adi_col in mag_ozet.columns:
+            mag_ozet = mag_ozet.rename(columns={magaza_adi_col: 'Mağaza Adı'})
+        else:
+            mag_ozet['Mağaza Adı'] = mag_ozet['Mağaza Kodu']
+        
         mag_ozet['Toplam Kayıp'] = abs(mag_ozet['Fark Tutarı']) + abs(mag_ozet['Fire Tutarı'])
         mag_ozet['Oran'] = np.where(mag_ozet['Satış Hasılatı'] > 0, 
                                      mag_ozet['Toplam Kayıp'] / mag_ozet['Satış Hasılatı'] * 100, 0)

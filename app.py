@@ -12,17 +12,18 @@ import os
 from supabase import create_client, Client
 
 # Sürekli Envanter Modülü
-from surekli_envanter_module import (
-    detect_envanter_type, hesapla_kategori_ozet, hesapla_surekli_risk_skoru,
-    hesapla_sayim_disiplini, hesapla_bolge_ozeti, detect_yuvarlak_sayi,
-    detect_anormal_miktar, detect_tekrar_miktar, get_sayilmasi_gereken_urunler,
-    get_sm_magaza_sayisi, get_bs_magaza_sayisi, get_sm_list, get_bs_list,
-    get_magazalar_by_sm, get_magazalar_by_bs, SM_BS_MAGAZA, SEGMENT_URUN,
-    prepare_surekli_ozet_for_supabase,
-    # Yeni fonksiyonlar
-    hesapla_urun_bolge_median, detect_median_sapma, detect_sayilmayan_zaman,
-    hesapla_sm_risk_skoru, hesapla_bs_risk_skoru, hesapla_tum_sm_risk, hesapla_tum_bs_risk
-)
+try:
+    from surekli_envanter_module import (
+        detect_envanter_type, hesapla_kategori_ozet, hesapla_surekli_risk_skoru,
+        hesapla_sayim_disiplini, hesapla_bolge_ozeti, detect_yuvarlak_sayi,
+        detect_anormal_miktar, get_sayilmasi_gereken_urunler,
+        get_sm_magaza_sayisi, get_bs_magaza_sayisi, get_sm_list, get_bs_list,
+        get_magazalar_by_sm, get_magazalar_by_bs, SM_BS_MAGAZA, SEGMENT_URUN,
+        hesapla_tum_sm_risk, hesapla_tum_bs_risk, hesapla_urun_bolge_median, detect_median_sapma
+    )
+    SUREKLI_MODULE_LOADED = True
+except ImportError:
+    SUREKLI_MODULE_LOADED = False
 
 # Mobil uyumlu sayfa ayarı
 st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon="📊")
@@ -1118,28 +1119,61 @@ col_mode, col_refresh = st.columns([6, 1])
 
 with col_mode:
     if is_gm:
-        analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet", "🌍 GM Özet", "🔄 Sürekli Envanter"], horizontal=True)
+        manual_mode = st.radio("📊 Mod", ["📁 Dosya Yükle", "👔 SM Özet", "🌍 GM Özet"], horizontal=True)
     else:
-        analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet", "🔄 Sürekli Envanter"], horizontal=True)
+        manual_mode = st.radio("📊 Mod", ["📁 Dosya Yükle", "👔 SM Özet"], horizontal=True)
 
 with col_refresh:
-    if analysis_mode in ["👔 SM Özet", "🌍 GM Özet"]:
+    if manual_mode in ["👔 SM Özet", "🌍 GM Özet"]:
         if st.button("🔄", help="Verileri yenile"):
-            # Tüm cache'leri temizle
             st.cache_data.clear()
             if "df_all" in st.session_state:
                 del st.session_state.df_all
             st.rerun()
 
-# SM Özet ve GM Özet modları için dosya yükleme gerekmez
-if analysis_mode not in ["👔 SM Özet", "🌍 GM Özet", "🔄 Sürekli Envanter"]:
-    # Dosya yükleme - direkt ekranda
-    uploaded_file = st.file_uploader("📁 Excel dosyası yükleyin", type=['xlsx', 'xls'])
-elif analysis_mode == "🔄 Sürekli Envanter":
-    # Sürekli envanter için ayrı uploader
-    uploaded_file = st.file_uploader("📁 Sürekli Envanter Excel dosyası yükleyin", type=['xlsx', 'xls'], key="surekli_uploader")
-else:
-    uploaded_file = None
+# Analiz modu belirleme
+analysis_mode = None
+uploaded_file = None
+
+if manual_mode == "📁 Dosya Yükle":
+    uploaded_file = st.file_uploader("📁 Excel dosyası yükleyin (Parçalı veya Sürekli - otomatik algılanır)", type=['xlsx', 'xls'])
+    
+    if uploaded_file is not None and SUREKLI_MODULE_LOADED:
+        # Dosyayı oku ve türünü algıla
+        try:
+            xl = pd.ExcelFile(uploaded_file)
+            sheet_names = xl.sheet_names
+            best_sheet = None
+            max_cols = 0
+            for sheet in sheet_names:
+                temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
+                if len(temp_df.columns) > max_cols:
+                    max_cols = len(temp_df.columns)
+                    best_sheet = sheet
+            
+            df_raw_check = pd.read_excel(uploaded_file, sheet_name=best_sheet)
+            detected_type = detect_envanter_type(df_raw_check)
+            
+            if detected_type == 'surekli':
+                analysis_mode = "🔄 Sürekli Envanter"
+                st.success(f"✅ **Sürekli Envanter** algılandı: {len(df_raw_check)} satır")
+                st.session_state['df_surekli'] = df_raw_check
+            else:
+                # Parçalı envanter - alt mod seçimi
+                parcali_mode = st.radio("📊 Analiz Türü", ["🏪 Tek Mağaza", "🌍 Bölge Özeti"], horizontal=True)
+                analysis_mode = parcali_mode
+                st.success(f"✅ **Parçalı Envanter** algılandı: {len(df_raw_check)} satır")
+        except Exception as e:
+            st.error(f"Dosya okuma hatası: {str(e)}")
+            
+    elif uploaded_file is not None:
+        # Modül yüklü değilse eski sisteme devam
+        analysis_mode = "🏪 Tek Mağaza"
+        
+elif manual_mode == "👔 SM Özet":
+    analysis_mode = "👔 SM Özet"
+elif manual_mode == "🌍 GM Özet":
+    analysis_mode = "🌍 GM Özet"
 
 
 def analyze_inventory(df):
@@ -3732,7 +3766,7 @@ elif analysis_mode == "🌍 GM Özet":
                     - 🏪 Tüm Mağazalar (Risk puanına göre sıralı)
                     """)
 
-elif uploaded_file is not None and analysis_mode != "🔄 Sürekli Envanter":
+elif uploaded_file is not None:
     try:
         xl = pd.ExcelFile(uploaded_file)
         sheet_names = xl.sheet_names
@@ -4334,354 +4368,159 @@ elif uploaded_file is not None and analysis_mode != "🔄 Sürekli Envanter":
         st.exception(e)
 
 # ==================== SÜREKLİ ENVANTER MODU ====================
-elif analysis_mode == "🔄 Sürekli Envanter":
+elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
     st.markdown("## 🔄 Sürekli Envanter Analizi")
     st.caption("Et-Tavuk, Ekmek, Meyve/Sebze haftalık envanter takibi")
     
-    if uploaded_file is not None:
-        try:
-            df_surekli = pd.read_excel(uploaded_file)
-            
-            # Envanter türü kontrolü
-            env_type = detect_envanter_type(df_surekli)
-            if env_type != 'surekli':
-                st.warning("⚠️ Bu dosya sürekli envanter formatında değil! Parçalı envanter için '🏪 Tek Mağaza' modunu kullanın.")
-            else:
-                st.success(f"✅ Sürekli envanter dosyası yüklendi: {len(df_surekli)} satır")
-                
-                # Mağaza listesi
-                magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
-                
-                # Alt sekmeler
-                surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon"])
-                
-                with surekli_tabs[0]:  # ÖZET
-                    st.subheader("📊 Genel Özet")
-                    
-                    # Kategori özeti
-                    kat_ozet = hesapla_kategori_ozet(df_surekli)
-                    
-                    if kat_ozet:
-                        cols = st.columns(len(kat_ozet) + 1)
-                        
-                        toplam_fark = 0
-                        toplam_fire = 0
-                        toplam_satis = 0
-                        
-                        for i, (kat, data) in enumerate(kat_ozet.items()):
-                            with cols[i]:
-                                emoji = "🥩" if "Et" in kat else "🍞" if "Ekmek" in kat else "🥬"
-                                st.metric(
-                                    f"{emoji} {kat}",
-                                    f"{data['fark']:,.0f} TL",
-                                    f"Fire: {data['fire']:,.0f} TL | %{data['oran']:.1f}"
-                                )
-                            toplam_fark += data['fark']
-                            toplam_fire += data['fire']
-                            toplam_satis += data['satis']
-                        
-                        with cols[-1]:
-                            toplam_kayip = abs(toplam_fark) + abs(toplam_fire)
-                            toplam_oran = (toplam_kayip / toplam_satis * 100) if toplam_satis > 0 else 0
-                            st.metric(
-                                "📊 TOPLAM",
-                                f"{toplam_fark + toplam_fire:,.0f} TL",
-                                f"Oran: %{toplam_oran:.2f}"
-                            )
-                    
-                    # Mağaza bazlı analiz
-                    if len(magazalar) == 1:
-                        st.markdown("---")
-                        magaza = magazalar[0]
-                        magaza_adi = df_surekli['Mağaza Adı'].iloc[0] if 'Mağaza Adı' in df_surekli.columns else ''
-                        
-                        st.subheader(f"🏪 {magaza} - {magaza_adi}")
-                        
-                        # Risk skoru
-                        risk = hesapla_surekli_risk_skoru(df_surekli)
-                        
-                        col1, col2 = st.columns([1, 3])
-                        with col1:
-                            risk_class = "metric-kritik" if risk['seviye'] == 'kritik' else "metric-riskli" if risk['seviye'] == 'riskli' else "metric-dikkat" if risk['seviye'] == 'dikkat' else "metric-normal"
-                            st.markdown(f"""
-                            <div style="text-align:center; padding:20px; background: {'#ff4444' if risk['seviye']=='kritik' else '#ff8800' if risk['seviye']=='riskli' else '#ffcc00' if risk['seviye']=='dikkat' else '#44aa44'}; border-radius:10px;">
-                                <h2 style="color:white; margin:0;">{risk['emoji']} {risk['toplam_puan']}/{risk['max_puan']}</h2>
-                                <p style="color:white; margin:0;">{risk['seviye'].upper()}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        with col2:
-                            st.markdown("**Risk Detayları:**")
-                            risk_items = []
-                            for key, val in risk['detaylar'].items():
-                                if val['puan'] > 0:
-                                    risk_items.append(f"• {key.replace('_', ' ').title()}: {val['puan']}/{val['max']}")
-                            st.write("\n".join(risk_items) if risk_items else "✅ Önemli risk yok")
-                    
-                    elif len(magazalar) > 1:
-                        st.markdown("---")
-                        st.info(f"📦 {len(magazalar)} mağaza yüklendi. Bölge analizini görmek için '📈 Bölge Analizi' sekmesine gidin.")
-                
-                with surekli_tabs[1]:  # TOP 10
-                    st.subheader("🏆 En Riskli Mağazalar ve Ürünler")
-                    
-                    bolge_ozet = hesapla_bolge_ozeti(df_surekli)
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("### 🏪 Top 10 Riskli Mağaza")
-                        if 'top10_magaza' in bolge_ozet and len(bolge_ozet['top10_magaza']) > 0:
-                            df_top = bolge_ozet['top10_magaza'][['Mağaza Kodu', 'Mağaza Adı', 'Toplam Kayıp', 'Oran']].copy()
-                            df_top['Oran'] = df_top['Oran'].apply(lambda x: f"%{x:.1f}")
-                            df_top['Toplam Kayıp'] = df_top['Toplam Kayıp'].apply(lambda x: f"{x:,.0f} TL")
-                            st.dataframe(df_top, use_container_width=True, hide_index=True)
-                        else:
-                            st.info("Yeterli veri yok")
-                    
-                    with col2:
-                        st.markdown("### 📉 Top 5 Açık Veren Ürün")
-                        if 'top5_acik' in bolge_ozet and len(bolge_ozet['top5_acik']) > 0:
-                            st.dataframe(bolge_ozet['top5_acik'], use_container_width=True, hide_index=True)
-                        else:
-                            st.info("Açık veren ürün yok")
-                        
-                        st.markdown("### 🔥 Top 5 Fire Yazılan Ürün")
-                        if 'top5_fire' in bolge_ozet and len(bolge_ozet['top5_fire']) > 0:
-                            st.dataframe(bolge_ozet['top5_fire'], use_container_width=True, hide_index=True)
-                        else:
-                            st.info("Fire yazılan ürün yok")
-                    
-                    st.markdown("### 📊 Top 5 Yüksek Oranlı Ürün (Min. 500 TL satış)")
-                    if 'top5_oran' in bolge_ozet and len(bolge_ozet['top5_oran']) > 0:
-                        st.dataframe(bolge_ozet['top5_oran'], use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Yeterli satış hacimli ürün yok")
-                
-                with surekli_tabs[2]:  # BÖLGE ANALİZİ
-                    st.subheader("📈 Bölge Analizi - SM/BS Risk Skorları")
-                    
-                    # SM/BS seçimi
-                    view_mode = st.radio("Görünüm", ["SM Bazlı", "BS Bazlı", "Median Sapma"], horizontal=True, key="bolge_view")
-                    
-                    if view_mode == "SM Bazlı":
-                        st.markdown("### 👔 SM Risk Skorları")
-                        
-                        # Tüm SM risk skorlarını hesapla
-                        sm_riskleri = hesapla_tum_sm_risk(df_surekli)
-                        
-                        if sm_riskleri:
-                            # Özet tablo
-                            sm_tablo = []
-                            for sm_risk in sm_riskleri:
-                                sm_tablo.append({
-                                    'SM': sm_risk['sm'],
-                                    'Mağaza': sm_risk['magaza_sayisi'],
-                                    'Ort. Skor': f"{sm_risk['ortalama_skor']:.0f}",
-                                    'Median': f"{sm_risk['median_skor']:.0f}",
-                                    '🔴 Kritik': sm_risk['kritik_sayisi'],
-                                    '🟠 Riskli': sm_risk['riskli_sayisi'],
-                                    '⚠️ Dikkat': sm_risk['dikkat_sayisi'],
-                                    '✅ Normal': sm_risk['normal_sayisi']
-                                })
-                            st.dataframe(pd.DataFrame(sm_tablo), use_container_width=True, hide_index=True)
-                            
-                            # Detay expander'ları
-                            for sm_risk in sm_riskleri:
-                                emoji = '🔴' if sm_risk['ortalama_skor'] > 50 else '🟠' if sm_risk['ortalama_skor'] > 35 else '⚠️' if sm_risk['ortalama_skor'] > 20 else '✅'
-                                with st.expander(f"{emoji} {sm_risk['sm']} - Ort: {sm_risk['ortalama_skor']:.0f} puan ({sm_risk['magaza_sayisi']} mağaza)"):
-                                    # Kategorik özet
-                                    sm_magazalar = get_magazalar_by_sm(sm_risk['sm'])
-                                    sm_kodlari = list(sm_magazalar.keys())
-                                    df_sm = df_surekli[df_surekli['Mağaza Kodu'].astype(str).isin(sm_kodlari)]
-                                    
-                                    if len(df_sm) > 0:
-                                        sm_ozet = hesapla_kategori_ozet(df_sm)
-                                        cols = st.columns(4)
-                                        for i, (kat, data) in enumerate(sm_ozet.items()):
-                                            with cols[i]:
-                                                st.metric(kat, f"{data['fark']:,.0f} TL", f"%{data['oran']:.1f}")
-                                    
-                                    # Mağaza detayları
-                                    if sm_risk['magazalar']:
-                                        st.markdown("**Mağaza Risk Sıralaması:**")
-                                        mag_tablo = []
-                                        for m in sm_risk['magazalar'][:10]:
-                                            mag_tablo.append({
-                                                'Mağaza': m['magaza'],
-                                                'Skor': f"{m['skor']}/97",
-                                                'Seviye': f"{m['emoji']} {m['seviye'].upper()}"
-                                            })
-                                        st.dataframe(pd.DataFrame(mag_tablo), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("SM verisi bulunamadı")
-                    
-                    elif view_mode == "BS Bazlı":
-                        st.markdown("### 👤 BS Risk Skorları")
-                        
-                        # Tüm BS risk skorlarını hesapla
-                        bs_riskleri = hesapla_tum_bs_risk(df_surekli)
-                        
-                        if bs_riskleri:
-                            # Özet tablo
-                            bs_tablo = []
-                            for bs_risk in bs_riskleri:
-                                emoji = '🔴' if bs_risk['ortalama_skor'] > 50 else '🟠' if bs_risk['ortalama_skor'] > 35 else '⚠️' if bs_risk['ortalama_skor'] > 20 else '✅'
-                                bs_tablo.append({
-                                    '': emoji,
-                                    'BS': bs_risk['bs'],
-                                    'Mağaza': bs_risk['magaza_sayisi'],
-                                    'Ort. Skor': f"{bs_risk['ortalama_skor']:.0f}",
-                                    '🔴': bs_risk['kritik_sayisi'],
-                                    '🟠': bs_risk['riskli_sayisi']
-                                })
-                            st.dataframe(pd.DataFrame(bs_tablo), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("BS verisi bulunamadı")
-                    
-                    else:  # Median Sapma
-                        st.markdown("### 📊 Ürün Bazlı Median Sapma Analizi")
-                        st.caption("Bölge medianının 1.5 katını aşan mağaza-ürün kombinasyonları")
-                        
-                        # Bölge medianlarını hesapla
-                        urun_medianlar = hesapla_urun_bolge_median(df_surekli)
-                        
-                        if urun_medianlar:
-                            st.info(f"📈 {len(urun_medianlar)} ürün için bölge medianı hesaplandı")
-                            
-                            # Mağaza seç
-                            mag_list = df_surekli['Mağaza Kodu'].unique().tolist()
-                            selected_mag = st.selectbox("Mağaza Seçin", mag_list)
-                            
-                            if selected_mag:
-                                df_mag = df_surekli[df_surekli['Mağaza Kodu'] == selected_mag]
-                                sapan_urunler = detect_median_sapma(df_mag, urun_medianlar)
-                                
-                                if sapan_urunler:
-                                    st.warning(f"⚠️ {len(sapan_urunler)} ürün bölge medianını aşıyor")
-                                    st.dataframe(pd.DataFrame(sapan_urunler), use_container_width=True, hide_index=True)
-                                else:
-                                    st.success("✅ Tüm ürünler bölge ortalamasında")
-                        else:
-                            st.info("Median hesaplaması için yeterli veri yok")
-                
-                with surekli_tabs[3]:  # SAYIM DİSİPLİNİ
-                    st.subheader("📋 Sayım Disiplini Takibi")
-                    st.caption("Her mağaza haftada 3 farklı kategoride (Meyve/Sebze, Et-Tavuk, Ekmek) sayım yapmalı")
-                    
-                    # SM bazlı özet
-                    st.markdown("### 👔 SM Bazlı Sayım Durumu")
-                    
-                    sm_list = get_sm_list()
-                    sm_data = []
-                    
-                    for sm in sm_list:
-                        disiplin = hesapla_sayim_disiplini(df_surekli, sm=sm)
-                        if disiplin:
-                            sm_data.append({
-                                'SM': sm,
-                                'Mağaza Sayısı': disiplin.get('magaza_sayisi', 0),
-                                'Beklenen': disiplin['toplam_beklenen'],
-                                'Yapılan': disiplin['toplam_yapilan'],
-                                'Oran': f"%{disiplin['oran']:.0f}",
-                                'M/S': f"{disiplin['kategoriler'].get('Meyve/Sebz', {}).get('yapilan', 0)}/{disiplin['kategoriler'].get('Meyve/Sebz', {}).get('beklenen', 0)}",
-                                'Et/Tv': f"{disiplin['kategoriler'].get('Et-Tavuk', {}).get('yapilan', 0)}/{disiplin['kategoriler'].get('Et-Tavuk', {}).get('beklenen', 0)}",
-                                'Ekmek': f"{disiplin['kategoriler'].get('Ekmek', {}).get('yapilan', 0)}/{disiplin['kategoriler'].get('Ekmek', {}).get('beklenen', 0)}",
-                            })
-                    
-                    if sm_data:
-                        st.dataframe(pd.DataFrame(sm_data), use_container_width=True, hide_index=True)
-                    
-                    # BS detayı
-                    st.markdown("### 👤 BS Detayı")
-                    selected_sm = st.selectbox("SM Seçin", sm_list)
-                    
-                    if selected_sm:
-                        bs_of_sm = set()
-                        for kod, bilgi in SM_BS_MAGAZA.items():
-                            if bilgi['sm'] == selected_sm:
-                                bs_of_sm.add(bilgi['bs'])
-                        
-                        bs_data = []
-                        for bs in sorted(bs_of_sm):
-                            disiplin = hesapla_sayim_disiplini(df_surekli, bs=bs)
-                            if disiplin:
-                                bs_data.append({
-                                    'BS': bs,
-                                    'Mağaza': disiplin.get('magaza_sayisi', 0),
-                                    'Beklenen': disiplin['toplam_beklenen'],
-                                    'Yapılan': disiplin['toplam_yapilan'],
-                                    'Oran': f"%{disiplin['oran']:.0f}",
-                                })
-                        
-                        if bs_data:
-                            st.dataframe(pd.DataFrame(bs_data), use_container_width=True, hide_index=True)
-                
-                with surekli_tabs[4]:  # MANİPÜLASYON
-                    st.subheader("⚠️ Manipülasyon Tespiti")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("### 🔢 Yuvarlak Sayı Girişleri")
-                        st.caption("Meyve/Sebze ve Et-Tavuk'ta 5, 10, 15... gibi tam sayılar")
-                        
-                        yuvarlak_df = detect_yuvarlak_sayi(df_surekli)
-                        if len(yuvarlak_df) > 0:
-                            st.warning(f"⚠️ {len(yuvarlak_df)} ürün şüpheli yuvarlak sayı")
-                            display_cols = ['Mağaza Kodu', 'Malzeme Tanımı', 'Sayım Miktarı']
-                            display_cols = [c for c in display_cols if c in yuvarlak_df.columns]
-                            st.dataframe(yuvarlak_df[display_cols].head(20), use_container_width=True, hide_index=True)
-                        else:
-                            st.success("✅ Yuvarlak sayı tespit edilmedi")
-                    
-                    with col2:
-                        st.markdown("### 📦 Anormal Yüksek Miktar")
-                        st.caption(">50 kg/adet (Patates/Soğan hariç)")
-                        
-                        anormal_df = detect_anormal_miktar(df_surekli)
-                        if len(anormal_df) > 0:
-                            st.warning(f"⚠️ {len(anormal_df)} ürün anormal yüksek miktar")
-                            display_cols = ['Mağaza Kodu', 'Malzeme Tanımı', 'Sayım Miktarı']
-                            display_cols = [c for c in display_cols if c in anormal_df.columns]
-                            st.dataframe(anormal_df[display_cols], use_container_width=True, hide_index=True)
-                        else:
-                            st.success("✅ Anormal miktar tespit edilmedi")
-                    
-                    # Sayılmayan ürünler
-                    st.markdown("### 📋 Sayılmayan Ürünler")
-                    st.caption("Segment ve blokaj dikkate alınarak sayılması gereken ama sayılmayan ürünler")
-                    
-                    if len(magazalar) == 1:
-                        magaza = magazalar[0]
-                        sayilmasi_gereken = get_sayilmasi_gereken_urunler(magaza)
-                        sayilan = set(str(k) for k in df_surekli['Malzeme Kodu'].unique()) if 'Malzeme Kodu' in df_surekli.columns else set()
-                        sayilmayan = [u for u in sayilmasi_gereken if u not in sayilan]
-                        
-                        if sayilmayan:
-                            st.warning(f"⚠️ {len(sayilmayan)} ürün sayılmamış")
-                            # Ürün isimlerini göster
-                            sayilmayan_bilgi = []
-                            for kod in sayilmayan[:20]:
-                                if kod in SEGMENT_URUN:
-                                    sayilmayan_bilgi.append({
-                                        'Kod': kod,
-                                        'Ürün': SEGMENT_URUN[kod]['tanim'],
-                                        'Segment': SEGMENT_URUN[kod]['tip']
-                                    })
-                            if sayilmayan_bilgi:
-                                st.dataframe(pd.DataFrame(sayilmayan_bilgi), use_container_width=True, hide_index=True)
-                        else:
-                            st.success("✅ Tüm ürünler sayılmış")
-                    else:
-                        st.info("Tek mağaza yüklendiğinde sayılmayan ürün analizi gösterilir")
+    if 'df_surekli' in st.session_state:
+        df_surekli = st.session_state['df_surekli']
+        magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
         
-        except Exception as e:
-            st.error(f"Hata: {str(e)}")
-            st.exception(e)
-    else:
-        st.info("👆 Sürekli envanter Excel dosyası yükleyin")
+        # Alt sekmeler
+        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 Bölge Analizi", "📋 Sayım Disiplini", "⚠️ Manipülasyon"])
+        
+        with surekli_tabs[0]:  # ÖZET
+            st.subheader("📊 Genel Özet")
+            kat_ozet = hesapla_kategori_ozet(df_surekli)
+            
+            if kat_ozet:
+                cols = st.columns(len(kat_ozet) + 1)
+                toplam_fark, toplam_fire, toplam_satis = 0, 0, 0
+                
+                for i, (kat, data) in enumerate(kat_ozet.items()):
+                    with cols[i]:
+                        emoji = "🥩" if "Et" in kat else "🍞" if "Ekmek" in kat else "🥬"
+                        st.metric(f"{emoji} {kat}", f"{data['fark']:,.0f} TL", f"Fire: {data['fire']:,.0f} TL | %{data['oran']:.1f}")
+                    toplam_fark += data['fark']
+                    toplam_fire += data['fire']
+                    toplam_satis += data['satis']
+                
+                with cols[-1]:
+                    toplam_kayip = abs(toplam_fark) + abs(toplam_fire)
+                    toplam_oran = (toplam_kayip / toplam_satis * 100) if toplam_satis > 0 else 0
+                    st.metric("📊 TOPLAM", f"{toplam_fark + toplam_fire:,.0f} TL", f"Oran: %{toplam_oran:.2f}")
+            
+            # Tek mağaza ise risk skoru göster
+            if len(magazalar) == 1:
+                st.markdown("---")
+                magaza = magazalar[0]
+                magaza_adi_col = 'Mağaza Adı' if 'Mağaza Adı' in df_surekli.columns else 'Mağaza Tanım' if 'Mağaza Tanım' in df_surekli.columns else None
+                magaza_adi = df_surekli[magaza_adi_col].iloc[0] if magaza_adi_col else ''
+                
+                st.subheader(f"🏪 {magaza} - {magaza_adi}")
+                risk = hesapla_surekli_risk_skoru(df_surekli)
+                
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    bg_color = '#ff4444' if risk['seviye']=='kritik' else '#ff8800' if risk['seviye']=='riskli' else '#ffcc00' if risk['seviye']=='dikkat' else '#44aa44'
+                    st.markdown(f"""
+                    <div style="text-align:center; padding:20px; background:{bg_color}; border-radius:10px;">
+                        <h2 style="color:white; margin:0;">{risk['emoji']} {risk['toplam_puan']}/{risk['max_puan']}</h2>
+                        <p style="color:white; margin:0;">{risk['seviye'].upper()}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown("**Risk Detayları:**")
+                    risk_items = [f"• {k.replace('_', ' ').title()}: {v['puan']}/{v['max']}" for k, v in risk['detaylar'].items() if v['puan'] > 0]
+                    st.write("\n".join(risk_items) if risk_items else "✅ Önemli risk yok")
+            
+            elif len(magazalar) > 1:
+                st.markdown("---")
+                st.info(f"📦 {len(magazalar)} mağaza yüklendi. Detaylı analiz için diğer sekmelere gidin.")
+        
+        with surekli_tabs[1]:  # TOP 10
+            st.subheader("🏆 En Riskli Mağazalar ve Ürünler")
+            bolge_ozet = hesapla_bolge_ozeti(df_surekli)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("### 🏪 Top 10 Riskli Mağaza")
+                if 'top10_magaza' in bolge_ozet and len(bolge_ozet['top10_magaza']) > 0:
+                    df_top = bolge_ozet['top10_magaza'][['Mağaza Kodu', 'Mağaza Adı', 'Toplam Kayıp', 'Oran']].copy()
+                    df_top['Oran'] = df_top['Oran'].apply(lambda x: f"%{x:.1f}")
+                    df_top['Toplam Kayıp'] = df_top['Toplam Kayıp'].apply(lambda x: f"{x:,.0f} TL")
+                    st.dataframe(df_top, use_container_width=True, hide_index=True)
+            
+            with col2:
+                st.markdown("### 📉 Top 5 Açık Veren Ürün")
+                if 'top5_acik' in bolge_ozet and len(bolge_ozet['top5_acik']) > 0:
+                    st.dataframe(bolge_ozet['top5_acik'], use_container_width=True, hide_index=True)
+                
+                st.markdown("### 🔥 Top 5 Fire Yazılan Ürün")
+                if 'top5_fire' in bolge_ozet and len(bolge_ozet['top5_fire']) > 0:
+                    st.dataframe(bolge_ozet['top5_fire'], use_container_width=True, hide_index=True)
+        
+        with surekli_tabs[2]:  # BÖLGE ANALİZİ
+            st.subheader("📈 SM/BS Risk Skorları")
+            view_mode = st.radio("Görünüm", ["SM Bazlı", "BS Bazlı"], horizontal=True, key="bolge_view")
+            
+            if view_mode == "SM Bazlı":
+                sm_riskleri = hesapla_tum_sm_risk(df_surekli)
+                if sm_riskleri:
+                    sm_tablo = []
+                    for sr in sm_riskleri:
+                        sm_tablo.append({
+                            'SM': sr['sm'], 'Mağaza': sr['magaza_sayisi'],
+                            'Ort.Skor': f"{sr['ortalama_skor']:.0f}",
+                            '🔴': sr['kritik_sayisi'], '🟠': sr['riskli_sayisi'],
+                            '⚠️': sr['dikkat_sayisi'], '✅': sr['normal_sayisi']
+                        })
+                    st.dataframe(pd.DataFrame(sm_tablo), use_container_width=True, hide_index=True)
+            else:
+                bs_riskleri = hesapla_tum_bs_risk(df_surekli)
+                if bs_riskleri:
+                    bs_tablo = []
+                    for br in bs_riskleri:
+                        emoji = '🔴' if br['ortalama_skor'] > 50 else '🟠' if br['ortalama_skor'] > 35 else '⚠️' if br['ortalama_skor'] > 20 else '✅'
+                        bs_tablo.append({
+                            '': emoji, 'BS': br['bs'], 'Mağaza': br['magaza_sayisi'],
+                            'Ort.Skor': f"{br['ortalama_skor']:.0f}",
+                            '🔴': br['kritik_sayisi'], '🟠': br['riskli_sayisi']
+                        })
+                    st.dataframe(pd.DataFrame(bs_tablo), use_container_width=True, hide_index=True)
+        
+        with surekli_tabs[3]:  # SAYIM DİSİPLİNİ
+            st.subheader("📋 Sayım Disiplini Takibi")
+            st.caption("Her mağaza haftada 3 farklı kategoride sayım yapmalı")
+            
+            sm_list = get_sm_list()
+            sm_data = []
+            for sm in sm_list:
+                disiplin = hesapla_sayim_disiplini(df_surekli, sm=sm)
+                if disiplin:
+                    sm_data.append({
+                        'SM': sm, 'Mağaza': disiplin.get('magaza_sayisi', 0),
+                        'Beklenen': disiplin['toplam_beklenen'], 'Yapılan': disiplin['toplam_yapilan'],
+                        'Oran': f"%{disiplin['oran']:.0f}"
+                    })
+            if sm_data:
+                st.dataframe(pd.DataFrame(sm_data), use_container_width=True, hide_index=True)
+        
+        with surekli_tabs[4]:  # MANİPÜLASYON
+            st.subheader("⚠️ Manipülasyon Tespiti")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("### 🔢 Yuvarlak Sayı Girişleri")
+                yuvarlak_df = detect_yuvarlak_sayi(df_surekli)
+                if len(yuvarlak_df) > 0:
+                    st.warning(f"⚠️ {len(yuvarlak_df)} ürün şüpheli")
+                    display_cols = [c for c in ['Mağaza Kodu', 'Malzeme Tanımı', 'Sayım Miktarı'] if c in yuvarlak_df.columns]
+                    st.dataframe(yuvarlak_df[display_cols].head(20), use_container_width=True, hide_index=True)
+                else:
+                    st.success("✅ Yuvarlak sayı tespit edilmedi")
+            
+            with col2:
+                st.markdown("### 📦 Anormal Yüksek Miktar")
+                anormal_df = detect_anormal_miktar(df_surekli)
+                if len(anormal_df) > 0:
+                    st.warning(f"⚠️ {len(anormal_df)} ürün anormal")
+                    display_cols = [c for c in ['Mağaza Kodu', 'Malzeme Tanımı', 'Sayım Miktarı'] if c in anormal_df.columns]
+                    st.dataframe(anormal_df[display_cols], use_container_width=True, hide_index=True)
+                else:
+                    st.success("✅ Anormal miktar tespit edilmedi")
 
 else:
-    if analysis_mode not in ["👔 SM Özet", "🔄 Sürekli Envanter"]:
-        st.info("👆 Excel dosyası yükleyin")
+    if manual_mode == "📁 Dosya Yükle" and uploaded_file is None:
+        st.info("👆 Excel dosyası yükleyin (Parçalı veya Sürekli - otomatik algılanır)")
