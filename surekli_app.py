@@ -115,6 +115,7 @@ if 'user_sm' not in st.session_state:
 # Rol ve SM eşleştirmeleri
 USER_ROLES = {
     "ziya": {"role": "gm", "sm": None},
+    "kuklaci": {"role": "gm", "sm": None},
     "sm1": {"role": "sm", "sm": "ALİ AKÇAY"},
     "sm2": {"role": "sm", "sm": "ŞADAN YURDAKUL"},
     "sm3": {"role": "sm", "sm": "VELİ GÖK"},
