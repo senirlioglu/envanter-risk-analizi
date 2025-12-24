@@ -626,32 +626,32 @@ def main_app():
                         'satis_hasilati': 'sum'
                     }).reset_index()
                     sm_ozet.columns = ['Satış Müdürü', 'Mağaza', 'Fark', 'Fire', 'Satış']
-                    sm_ozet['Toplam Açık'] = sm_ozet['Fark'] + sm_ozet['Fire']
-                    sm_ozet = sm_ozet.sort_values('Toplam Açık', ascending=True)
+                    sm_ozet['Açık'] = sm_ozet['Fark'] + sm_ozet['Fire']
 
-                    # Başlık satırı
-                    header = st.columns([2, 1.5, 1.5, 1.5, 1.5])
-                    header[0].markdown("**Satış Müdürü**")
-                    header[1].markdown("**Fark**")
-                    header[2].markdown("**Fire**")
-                    header[3].markdown("**Toplam Açık**")
-                    header[4].markdown("**Satış**")
-                    st.markdown("---")
+                    # Oranları hesapla
+                    sm_ozet['Fark%'] = (sm_ozet['Fark'] / sm_ozet['Satış'] * 100).round(2)
+                    sm_ozet['Fire%'] = (sm_ozet['Fire'] / sm_ozet['Satış'] * 100).round(2)
+                    sm_ozet['Açık%'] = (sm_ozet['Açık'] / sm_ozet['Satış'] * 100).round(2)
 
-                    for _, row in sm_ozet.iterrows():
-                        # Oranları hesapla
-                        satis = row['Satış'] if row['Satış'] != 0 else 1
-                        fark_oran = row['Fark'] / satis * 100
-                        fire_oran = row['Fire'] / satis * 100
-                        acik_oran = row['Toplam Açık'] / satis * 100
+                    sm_ozet = sm_ozet.sort_values('Açık', ascending=True)
 
-                        cols = st.columns([2, 1.5, 1.5, 1.5, 1.5])
-                        cols[0].write(f"**{row['Satış Müdürü']}** ({row['Mağaza']} mğz)")
-                        cols[1].write(f"₺{row['Fark']:,.0f} | %{fark_oran:.2f}")
-                        cols[2].write(f"₺{row['Fire']:,.0f} | %{fire_oran:.2f}")
-                        cols[3].write(f"₺{row['Toplam Açık']:,.0f} | %{acik_oran:.2f}")
-                        cols[4].write(f"₺{row['Satış']:,.0f}")
-                        st.markdown("---")
+                    # Mobil uyumlu tablo
+                    st.dataframe(
+                        sm_ozet[['Satış Müdürü', 'Mağaza', 'Satış', 'Fark', 'Fark%', 'Fire', 'Fire%', 'Açık', 'Açık%']],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            'Satış Müdürü': st.column_config.TextColumn('SM', width='medium'),
+                            'Mağaza': st.column_config.NumberColumn('Mğz', format='%d', width='small'),
+                            'Satış': st.column_config.NumberColumn('Satış', format='%.0f'),
+                            'Fark': st.column_config.NumberColumn('Fark', format='%.0f'),
+                            'Fark%': st.column_config.NumberColumn('%', format='%.2f', width='small'),
+                            'Fire': st.column_config.NumberColumn('Fire', format='%.0f'),
+                            'Fire%': st.column_config.NumberColumn('%', format='%.2f', width='small'),
+                            'Açık': st.column_config.NumberColumn('Açık', format='%.0f'),
+                            'Açık%': st.column_config.NumberColumn('%', format='%.2f', width='small'),
+                        }
+                    )
                 else:
                     st.info("📥 Veri bulunamadı")
 
