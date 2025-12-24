@@ -724,38 +724,20 @@ def main_app():
                                     st.info("ℹ️ Yeni sayım yapan mağaza bulunamadı. Tüm veriler zaten güncel.")
                                     st.session_state['degisen_df'] = None
                                     st.session_state['tam_df'] = df
+
+                                # Otomatik kaydet
+                                st.markdown("---")
+                                st.markdown("### 💾 Otomatik Kayıt")
+                                with st.spinner("Veritabanına kaydediliyor..."):
+                                    basarili, _, mesaj = save_to_supabase(df)
+                                    if mesaj == "OK" and basarili > 0:
+                                        st.success(f"✅ {basarili} kayıt otomatik olarak kaydedildi!")
+                                    elif mesaj != "OK":
+                                        st.error(f"❌ Kayıt hatası: {mesaj}")
                             else:
-                                st.warning("⚠️ Supabase bağlantısı yok. Tüm veriler analiz edilecek.")
+                                st.warning("⚠️ Supabase bağlantısı yok. Veriler kaydedilemedi.")
                                 st.session_state['degisen_df'] = df
                                 st.session_state['tam_df'] = df
-
-                    # Supabase'e kaydet butonu
-                    if supabase:
-                        st.markdown("---")
-                        st.markdown("### 💾 Veritabanına Kaydet")
-
-                        kayit_secimi = st.radio(
-                            "Kayıt seçeneği:",
-                            ["Sadece yeni sayım yapanları kaydet", "Tüm veriyi kaydet"],
-                            index=0
-                        )
-
-                        if st.button("💾 Veritabanına Kaydet", use_container_width=True):
-                            with st.spinner("Kaydediliyor..."):
-                                if kayit_secimi == "Sadece yeni sayım yapanları kaydet":
-                                    if 'degisen_df' in st.session_state and st.session_state['degisen_df'] is not None:
-                                        kayit_df = st.session_state['degisen_df']
-                                    else:
-                                        kayit_df = df
-                                else:
-                                    kayit_df = df
-
-                                basarili, _, mesaj = save_to_supabase(kayit_df)
-
-                                if mesaj == "OK" and basarili > 0:
-                                    st.success(f"✅ {basarili} kayıt başarıyla kaydedildi!")
-                                elif mesaj != "OK":
-                                    st.error(f"❌ Kayıt hatası: {mesaj}")
 
             except Exception as e:
                 st.error(f"Dosya okunamadı: {e}")
