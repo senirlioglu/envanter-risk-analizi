@@ -581,15 +581,20 @@ def main_app():
                 toplam_satis = gm_df['satis_hasilati'].sum() if 'satis_hasilati' in gm_df.columns else 0
                 toplam_acik = toplam_fark + toplam_fire
 
+                # Oran hesapla
+                fark_oran = (toplam_fark / toplam_satis * 100) if toplam_satis != 0 else 0
+                fire_oran = (toplam_fire / toplam_satis * 100) if toplam_satis != 0 else 0
+                acik_oran = (toplam_acik / toplam_satis * 100) if toplam_satis != 0 else 0
+
                 st.markdown("---")
                 st.subheader(f"📊 Bölge Özeti - {magaza_sayisi} Mağaza")
 
                 # Üst metrikler
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("💰 Satış", f"₺{toplam_satis:,.0f}")
-                col2.metric("📉 Fark", f"₺{toplam_fark:,.0f}")
-                col3.metric("🔥 Fire", f"₺{toplam_fire:,.0f}")
-                col4.metric("📊 Toplam Açık", f"₺{toplam_acik:,.0f}")
+                col2.metric("📉 Fark", f"₺{toplam_fark:,.0f}", f"%{fark_oran:.2f}")
+                col3.metric("🔥 Fire", f"₺{toplam_fire:,.0f}", f"%{fire_oran:.2f}")
+                col4.metric("📊 Toplam Açık", f"₺{toplam_acik:,.0f}", f"%{acik_oran:.2f}")
             else:
                 st.warning("Seçili dönem için veri bulunamadı.")
                 gm_df = None
