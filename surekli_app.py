@@ -182,27 +182,210 @@ def get_risk_level(puan):
         return "🟡 DİKKAT", "dikkat"
     return "🟢 TEMİZ", "temiz"
 
-# ==================== VERİ FONKSİYONLARI (PLACEHOLDER) ====================
+# ==================== SUPABASE VERİ FONKSİYONLARI ====================
+
+TABLE_NAME = "surekli_envanter_v2"
+
+# Excel -> Supabase sütun eşleştirmesi
+COLUMN_MAPPING = {
+    'Envanter Dönemi': 'envanter_donemi',
+    'Envanter Tarihi': 'envanter_tarihi',
+    'Envanter Başlangıç Tarihi': 'envanter_baslangic_tarihi',
+    'Depolama Koşulu Grubu': 'depolama_kosulu_grubu',
+    'Depolama Koşulu': 'depolama_kosulu',
+    'Bölge Kodu': 'bolge_kodu',
+    'Bölge': 'bolge',
+    'Mağaza Kodu': 'magaza_kodu',
+    'Mağaza Tanım': 'magaza_tanim',
+    'Satış Müdürü': 'satis_muduru',
+    'Bölge Sorumlusu': 'bolge_sorumlusu',
+    'Ürün Grubu Kodu': 'urun_grubu_kodu',
+    'Ürün Grubu Tanımı': 'urun_grubu_tanimi',
+    'Mal Grubu Kodu': 'mal_grubu_kodu',
+    'Mal Grubu Tanımı': 'mal_grubu_tanimi',
+    'Malzeme Kodu': 'malzeme_kodu',
+    'Malzeme Tanımı': 'malzeme_tanimi',
+    'Satış Fiyatı': 'satis_fiyati',
+    'Envanter Sayisi': 'envanter_sayisi',
+    'Sayım Miktarı': 'sayim_miktari',
+    'Sayım Tutarı': 'sayim_tutari',
+    'Kaydi Miktar': 'kaydi_miktar',
+    'Kaydi Tutar': 'kaydi_tutar',
+    'Fark Miktarı': 'fark_miktari',
+    'Fark Tutarı': 'fark_tutari',
+    'Fire Miktarı': 'fire_miktari',
+    'Fire Tutarı': 'fire_tutari',
+    'Fark+Fire+Kısmi Envanter Miktarı': 'fark_fire_kismi_miktari',
+    'Fark+Fire+Kısmi Envanter Tutarı': 'fark_fire_kismi_tutari',
+    'Satış Miktarı': 'satis_miktari',
+    'Satış Hasılatı': 'satis_hasilati',
+    'İade Miktarı': 'iade_miktari',
+    'İade Tutarı': 'iade_tutari',
+    'İptal Fişteki Miktar': 'iptal_fisteki_miktar',
+    'İptal Fiş Tutarı': 'iptal_fis_tutari',
+    'İptal GP Miktarı': 'iptal_gp_miktari',
+    'İptal GP TUTARI': 'iptal_gp_tutari',
+    'İptal Satır Miktarı': 'iptal_satir_miktari',
+    'İptal Satır Tutarı': 'iptal_satir_tutari',
+}
+
+def save_to_supabase(df):
+    """
+    Excel verisini Supabase'e kaydet (upsert)
+    Unique key: magaza_kodu + malzeme_kodu + envanter_donemi + envanter_sayisi
+    """
+    if supabase is None:
+        return 0, 0, "Supabase bağlantısı yok"
+
+    try:
+        records = []
+        for _, row in df.iterrows():
+            record = {}
+            for excel_col, db_col in COLUMN_MAPPING.items():
+                if excel_col in row.index:
+                    val = row[excel_col]
+                    if pd.isna(val):
+                        val = None
+                    elif isinstance(val, pd.Timestamp):
+                        val = val.strftime('%Y-%m-%d')
+                    elif isinstance(val, (np.integer, np.int64)):
+                        val = int(val)
+                    elif isinstance(val, (np.floating, np.float64)):
+                        val = float(val) if not np.isnan(val) else None
+                    elif isinstance(val, str):
+                        val = val.strip()
+                    record[db_col] = val
+            records.append(record)
+
+        # Batch upsert
+        batch_size = 500
+        inserted = 0
+        updated = 0
+
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i+batch_size]
+            try:
+                result = supabase.table(TABLE_NAME).upsert(
+                    batch,
+                    on_conflict='magaza_kodu,malzeme_kodu,envanter_donemi,envanter_sayisi'
+                ).execute()
+                inserted += len(result.data) if result.data else 0
+            except Exception as e:
+                st.warning(f"Batch {i//batch_size + 1} hatası: {str(e)[:100]}")
+
+        return inserted, updated, "OK"
+
+    except Exception as e:
+        return 0, 0, f"Hata: {str(e)}"
+
+def get_mevcut_envanter_sayilari(magaza_kodlari, envanter_donemi):
+    """
+    Belirli mağazalar için mevcut envanter sayılarını getir
+    Karşılaştırma için kullanılır
+    """
+    if supabase is None:
+        return {}
+
+    try:
+        result = supabase.table(TABLE_NAME).select(
+            'magaza_kodu,malzeme_kodu,envanter_sayisi'
+        ).eq(
+            'envanter_donemi', str(envanter_donemi)
+        ).in_(
+            'magaza_kodu', magaza_kodlari
+        ).execute()
+
+        # Dict: (magaza_kodu, malzeme_kodu) -> max(envanter_sayisi)
+        mevcut = {}
+        if result.data:
+            for r in result.data:
+                key = (r['magaza_kodu'], r['malzeme_kodu'])
+                if key not in mevcut or r['envanter_sayisi'] > mevcut[key]:
+                    mevcut[key] = r['envanter_sayisi']
+
+        return mevcut
+
+    except Exception as e:
+        st.error(f"Veri çekme hatası: {e}")
+        return {}
+
+def detect_envanter_degisimi(df, mevcut_sayilar):
+    """
+    Envanter sayısı değişen ürünleri tespit et
+    Yeni sayım yapılmış mağazaları bulur
+    """
+    degisen_magazalar = set()
+    degisen_urunler = []
+
+    for _, row in df.iterrows():
+        magaza = str(row.get('Mağaza Kodu', ''))
+        malzeme = str(row.get('Malzeme Kodu', ''))
+        yeni_sayisi = int(row.get('Envanter Sayisi', 0) or 0)
+
+        key = (magaza, malzeme)
+        mevcut_sayisi = mevcut_sayilar.get(key, 0)
+
+        if yeni_sayisi > mevcut_sayisi:
+            degisen_magazalar.add(magaza)
+            degisen_urunler.append({
+                'magaza_kodu': magaza,
+                'malzeme_kodu': malzeme,
+                'onceki_sayisi': mevcut_sayisi,
+                'yeni_sayisi': yeni_sayisi,
+                'fark': yeni_sayisi - mevcut_sayisi
+            })
+
+    return list(degisen_magazalar), degisen_urunler
+
 @st.cache_data(ttl=300)
 def get_available_periods():
     """Mevcut dönemleri getir - Supabase'den"""
-    # TODO: Supabase'den çek
-    return ["2024-12", "2024-11", "2024-10"]
+    if supabase is None:
+        return []
+    try:
+        result = supabase.table(TABLE_NAME).select('envanter_donemi').execute()
+        if result.data:
+            donemler = list(set(r['envanter_donemi'] for r in result.data if r['envanter_donemi']))
+            return sorted(donemler, reverse=True)
+        return []
+    except:
+        return []
 
 @st.cache_data(ttl=300)
 def get_available_sms():
-    """Mevcut SM listesini getir"""
-    return ["ALİ AKÇAY", "ŞADAN YURDAKUL", "VELİ GÖK", "GİZEM TOSUN"]
+    """Mevcut SM listesini getir - Supabase'den"""
+    if supabase is None:
+        return ["ALİ AKÇAY", "ŞADAN YURDAKUL", "VELİ GÖK", "GİZEM TOSUN"]
+    try:
+        result = supabase.table(TABLE_NAME).select('satis_muduru').execute()
+        if result.data:
+            sms = list(set(r['satis_muduru'] for r in result.data if r['satis_muduru']))
+            return sorted(sms)
+        return []
+    except:
+        return ["ALİ AKÇAY", "ŞADAN YURDAKUL", "VELİ GÖK", "GİZEM TOSUN"]
 
-def get_sm_summary_data(sm=None, donemler=None):
-    """SM özet verisini getir - Placeholder"""
-    # TODO: Gerçek veri çekme fonksiyonu
-    return pd.DataFrame()
+def get_onceki_envanter(magaza_kodu, malzeme_kodu, envanter_donemi, envanter_sayisi):
+    """Bir önceki envanter sayısındaki kaydı getir"""
+    if supabase is None or envanter_sayisi <= 1:
+        return None
 
-def analyze_uploaded_file(df):
-    """Yüklenen dosyayı analiz et - Placeholder"""
-    # TODO: Gerçek analiz fonksiyonları
-    return df
+    try:
+        result = supabase.table(TABLE_NAME).select('*').eq(
+            'magaza_kodu', magaza_kodu
+        ).eq(
+            'malzeme_kodu', malzeme_kodu
+        ).eq(
+            'envanter_donemi', envanter_donemi
+        ).eq(
+            'envanter_sayisi', envanter_sayisi - 1
+        ).execute()
+
+        if result.data:
+            return result.data[0]
+        return None
+    except:
+        return None
 
 # ==================== ANA UYGULAMA ====================
 def main_app():
@@ -434,6 +617,9 @@ def main_app():
         **Yüklenecek dosya formatı:**
         - Sürekli envanter Excel dosyası
         - Et-Tavuk, Ekmek veya Meyve/Sebze kategorileri
+
+        **İşlem akışı:**
+        1. Excel yükle → 2. Değişim tespit → 3. Analiz → 4. Kaydet
         """)
 
         uploaded_file = st.file_uploader(
@@ -469,37 +655,107 @@ def main_app():
                 with st.expander("👁️ Veri Önizleme"):
                     st.dataframe(df.head(20), use_container_width=True)
 
-                # Analiz butonu
-                if st.button("🔍 Analiz Et", use_container_width=True):
-                    with st.spinner("Analiz ediliyor..."):
-                        # TODO: Analiz fonksiyonlarını ekle
-                        st.success("✅ Analiz tamamlandı!")
+                # Gerekli sütunlar kontrolü
+                gerekli_sutunlar = ['Mağaza Kodu', 'Malzeme Kodu', 'Envanter Dönemi', 'Envanter Sayisi']
+                eksik_sutunlar = [s for s in gerekli_sutunlar if s not in df.columns]
 
-                        # Özet göster
-                        st.markdown("---")
-                        st.markdown("### 📊 Analiz Sonuçları")
+                if eksik_sutunlar:
+                    st.error(f"❌ Eksik sütunlar: {', '.join(eksik_sutunlar)}")
+                else:
+                    # Analiz ve Değişim Tespit butonu
+                    if st.button("🔍 Değişim Tespit Et ve Analiz Et", use_container_width=True):
+                        with st.spinner("Veritabanı kontrol ediliyor..."):
+                            # Mevcut envanter sayılarını al
+                            if supabase:
+                                mevcut_sayilar = get_mevcut_envanter_sayilari()
 
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("📦 Toplam Ürün", len(df))
-                        with col2:
-                            if 'Mağaza Kodu' in df.columns:
-                                st.metric("🏪 Mağaza", df['Mağaza Kodu'].nunique())
+                                # Değişim tespit et
+                                degisen_magazalar = detect_envanter_degisimi(df, mevcut_sayilar)
+
+                                st.markdown("---")
+                                st.markdown("### 📊 Değişim Analizi")
+
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("📦 Toplam Satır", len(df))
+                                with col2:
+                                    toplam_magaza = df['Mağaza Kodu'].nunique()
+                                    st.metric("🏪 Toplam Mağaza", toplam_magaza)
+                                with col3:
+                                    st.metric("🔄 Yeni Sayım Yapan", len(degisen_magazalar))
+                                with col4:
+                                    degismeyen = toplam_magaza - len(degisen_magazalar)
+                                    st.metric("⏸️ Değişmeyen", degismeyen)
+
+                                if degisen_magazalar:
+                                    st.success(f"✅ {len(degisen_magazalar)} mağazada yeni sayım tespit edildi!")
+
+                                    # Değişen mağazaların listesi
+                                    with st.expander("🏪 Yeni Sayım Yapan Mağazalar"):
+                                        for mag in sorted(degisen_magazalar):
+                                            mag_df = df[df['Mağaza Kodu'] == mag]
+                                            if not mag_df.empty:
+                                                envanter_sayisi = mag_df['Envanter Sayisi'].iloc[0]
+                                                st.write(f"• {mag} - Envanter Sayısı: {envanter_sayisi}")
+
+                                    # Değişen mağazaların verilerini filtrele
+                                    degisen_df = df[df['Mağaza Kodu'].isin(degisen_magazalar)]
+                                    st.session_state['degisen_df'] = degisen_df
+                                    st.session_state['tam_df'] = df
+
+                                    # Değişen mağaza analizi
+                                    st.markdown("---")
+                                    st.markdown("### 📈 Değişen Mağazalar Özet")
+
+                                    if 'Fark Tutarı' in degisen_df.columns:
+                                        toplam_fark = degisen_df['Fark Tutarı'].sum()
+                                        st.metric("💰 Toplam Fark Tutarı", f"₺{toplam_fark:,.2f}")
+
+                                    if 'Fire Tutarı' in degisen_df.columns:
+                                        toplam_fire = degisen_df['Fire Tutarı'].sum()
+                                        st.metric("🔥 Toplam Fire Tutarı", f"₺{toplam_fire:,.2f}")
+
+                                else:
+                                    st.info("ℹ️ Yeni sayım yapan mağaza bulunamadı. Tüm veriler zaten güncel.")
+                                    st.session_state['degisen_df'] = None
+                                    st.session_state['tam_df'] = df
                             else:
-                                st.metric("🏪 Mağaza", 1)
-                        with col3:
-                            st.metric("📊 Sütun", len(df.columns))
+                                st.warning("⚠️ Supabase bağlantısı yok. Tüm veriler analiz edilecek.")
+                                st.session_state['degisen_df'] = df
+                                st.session_state['tam_df'] = df
 
-                # Supabase'e kaydet butonu
-                if supabase:
-                    st.markdown("---")
-                    if st.button("💾 Veritabanına Kaydet", use_container_width=True):
-                        with st.spinner("Kaydediliyor..."):
-                            # TODO: Supabase kayıt fonksiyonu
-                            st.success("✅ Veriler kaydedildi!")
+                    # Supabase'e kaydet butonu
+                    if supabase:
+                        st.markdown("---")
+                        st.markdown("### 💾 Veritabanına Kaydet")
+
+                        kayit_secimi = st.radio(
+                            "Kayıt seçeneği:",
+                            ["Sadece yeni sayım yapanları kaydet", "Tüm veriyi kaydet"],
+                            index=0
+                        )
+
+                        if st.button("💾 Veritabanına Kaydet", use_container_width=True):
+                            with st.spinner("Kaydediliyor..."):
+                                if kayit_secimi == "Sadece yeni sayım yapanları kaydet":
+                                    if 'degisen_df' in st.session_state and st.session_state['degisen_df'] is not None:
+                                        kayit_df = st.session_state['degisen_df']
+                                    else:
+                                        kayit_df = df
+                                else:
+                                    kayit_df = df
+
+                                basarili, hata = save_to_supabase(kayit_df)
+
+                                if basarili > 0:
+                                    st.success(f"✅ {basarili} kayıt başarıyla kaydedildi!")
+                                if hata > 0:
+                                    st.warning(f"⚠️ {hata} kayıtta hata oluştu.")
 
             except Exception as e:
                 st.error(f"Dosya okunamadı: {e}")
+                import traceback
+                st.error(traceback.format_exc())
 
 # ==================== UYGULAMA BAŞLAT ====================
 if not st.session_state.logged_in:
