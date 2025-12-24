@@ -708,12 +708,50 @@ def main_app():
                         acik_pct = row['Açık%']
 
                         with st.expander(f"👔 {sm_name} | {row['Mağaza']} mğz | Açık: ₺{row['Açık']:,.0f} ({acik_pct:.2f}%)"):
+                            # Bu SM'in verilerini al
+                            sm_df = gm_df[gm_df['satis_muduru'] == sm_name]
+
+                            # SM kategori kırılımı
+                            sm_kat = {}
+                            if 'depolama_kosulu' in sm_df.columns:
+                                for _, kr in sm_df.groupby('depolama_kosulu').agg({
+                                    'fark_tutari': 'sum', 'fire_tutari': 'sum', 'satis_hasilati': 'sum'
+                                }).reset_index().iterrows():
+                                    k = str(kr['depolama_kosulu'] or '').upper()
+                                    s = kr['satis_hasilati']
+                                    if 'ET' in k or 'TAVUK' in k: e = '🐓'
+                                    elif 'MEYVE' in k or 'SEBZE' in k: e = '🥦'
+                                    elif 'EKMEK' in k: e = '🥖'
+                                    else: e = '📦'
+                                    sm_kat[e] = {
+                                        'satis': s, 'fark': kr['fark_tutari'], 'fire': kr['fire_tutari'],
+                                        'acik': kr['fark_tutari'] + kr['fire_tutari'],
+                                        'fark_pct': (kr['fark_tutari']/s*100) if s else 0,
+                                        'fire_pct': (kr['fire_tutari']/s*100) if s else 0,
+                                        'acik_pct': ((kr['fark_tutari']+kr['fire_tutari'])/s*100) if s else 0
+                                    }
+
+                            def sm_kat_line(fld):
+                                return " ".join([f"{e}: ₺{format_k(sm_kat[e][fld])} | {sm_kat[e][f'{fld}_pct']:.1f}%" for e in ['🐓','🥦','🥖'] if e in sm_kat])
+
                             # Özet metrikler
                             c1, c2, c3, c4 = st.columns(4)
-                            c1.metric("Satış", f"₺{row['Satış']:,.0f}")
-                            c2.metric("Fark", f"₺{row['Fark']:,.0f}", f"{row['Fark']/row['Satış']*100:.2f}%")
-                            c3.metric("Fire", f"₺{row['Fire']:,.0f}", f"{row['Fire']/row['Satış']*100:.2f}%")
-                            c4.metric("Açık", f"₺{row['Açık']:,.0f}", f"{acik_pct:.2f}%")
+                            with c1:
+                                st.metric("Satış", f"₺{row['Satış']:,.0f}")
+                                if sm_kat:
+                                    st.caption(" ".join([f"{e}: ₺{format_k(sm_kat[e]['satis'])}" for e in ['🐓','🥦','🥖'] if e in sm_kat]))
+                            with c2:
+                                st.metric("Fark", f"₺{row['Fark']:,.0f}", f"{row['Fark']/row['Satış']*100:.2f}%")
+                                if sm_kat:
+                                    st.caption(sm_kat_line('fark'))
+                            with c3:
+                                st.metric("Fire", f"₺{row['Fire']:,.0f}", f"{row['Fire']/row['Satış']*100:.2f}%")
+                                if sm_kat:
+                                    st.caption(sm_kat_line('fire'))
+                            with c4:
+                                st.metric("Açık", f"₺{row['Açık']:,.0f}", f"{acik_pct:.2f}%")
+                                if sm_kat:
+                                    st.caption(sm_kat_line('acik'))
 
                             # Bu SM'in mağazaları
                             st.markdown("**🏪 Mağazalar**")
