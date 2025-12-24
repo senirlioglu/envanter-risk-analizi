@@ -255,15 +255,13 @@ def save_to_supabase(df):
                         val = float(val) if not np.isnan(val) else None
                     elif isinstance(val, str):
                         val = val.strip()
-                        # Sayısal sütunlarda virgülü noktaya çevir
-                        if db_col in ['fark_miktari', 'fark_tutari', 'fire_miktari', 'fire_tutari',
-                                      'satis_miktari', 'satis_hasilati', 'sayim_miktari', 'sayim_tutari',
-                                      'kaydi_miktar', 'kaydi_tutar', 'satis_fiyati',
-                                      'iptal_satir_miktari', 'iptal_satir_tutari']:
+                        # Türkçe ondalık formatındaki sayıları çevir (ör: "0,0" -> 0.0)
+                        import re
+                        if re.match(r'^-?\d+,\d+$', val):
                             try:
                                 val = float(val.replace(',', '.'))
                             except:
-                                val = None
+                                pass
                     record[db_col] = val
             records.append(record)
 
@@ -745,13 +743,18 @@ def main_app():
                             st.session_state['degisen_df'] = None
                             st.session_state['tam_df'] = df
 
-                        # Otomatik kaydet
+                        # Otomatik kaydet - sadece bir kere
                         st.markdown("---")
-                        basarili, _, mesaj = save_to_supabase(df)
-                        if mesaj == "OK" and basarili > 0:
-                            st.success(f"💾 {basarili} kayıt veritabanına kaydedildi!")
-                        elif mesaj != "OK":
-                            st.error(f"❌ Kayıt hatası: {mesaj}")
+                        file_key = f"saved_{uploaded_file.name}_{len(df)}"
+                        if file_key not in st.session_state:
+                            basarili, _, mesaj = save_to_supabase(df)
+                            if mesaj == "OK" and basarili > 0:
+                                st.session_state[file_key] = True
+                                st.success(f"💾 {basarili} kayıt veritabanına kaydedildi!")
+                            elif mesaj != "OK":
+                                st.error(f"❌ Kayıt hatası: {mesaj}")
+                        else:
+                            st.info("💾 Veriler zaten kaydedildi.")
                     else:
                         st.warning("⚠️ Supabase bağlantısı yok.")
                         st.session_state['degisen_df'] = df
