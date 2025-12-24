@@ -11,45 +11,8 @@ import json
 import os
 from supabase import create_client, Client
 
-# Sürekli Envanter Modülü v3
-try:
-    from surekli_envanter_module import (
-        # Temel fonksiyonlar
-        detect_envanter_type, get_magaza_bilgi, get_sm_list, get_bs_list,
-        get_magazalar_by_sm, get_magazalar_by_bs,
-        SM_BS_MAGAZA, SEGMENT_URUN,
-        # Analiz fonksiyonları
-        hesapla_kategori_ozet, hesapla_risk_skoru, hesapla_sayim_disiplini,
-        hesapla_magaza_ozet, hesapla_sm_ozet, hesapla_top10, hesapla_bolge_ozeti,
-        # Detay analizleri
-        analiz_fire_yazmama, analiz_kronik_acik, analiz_sayim_atlama,
-        analiz_iptal_artis, analiz_yuvarlak_sayi, analiz_anormal_miktar,
-        # Supabase fonksiyonları
-        prepare_detay_kayitlar, save_detay_to_supabase, 
-        get_onceki_envanter, get_magaza_onceki_kayitlar,
-        # Eski uyumluluk
-        detect_yuvarlak_sayi, detect_anormal_miktar
-    )
-    SUREKLI_MODULE_LOADED = True
-except ImportError as e:
-    SUREKLI_MODULE_LOADED = False
-    print(f"Sürekli modül yüklenemedi: {e}")
-
 # Mobil uyumlu sayfa ayarı
 st.set_page_config(page_title="Envanter Risk Analizi", layout="wide", page_icon="📊")
-
-
-# ==================== HELPER FONKSİYONLAR ====================
-def _get_price_col(df: pd.DataFrame) -> pd.Series:
-    """Fiyat kolonunu bul - farklı kolon isimlerini destekler"""
-    if 'Satış Fiyatı' in df.columns:
-        return pd.to_numeric(df['Satış Fiyatı'], errors='coerce').fillna(0)
-    if 'Birim Fiyat' in df.columns:
-        return pd.to_numeric(df['Birim Fiyat'], errors='coerce').fillna(0)
-    if 'satis_fiyati' in df.columns:
-        return pd.to_numeric(df['satis_fiyati'], errors='coerce').fillna(0)
-    return pd.Series(0, index=df.index, dtype=float)
-
 
 # ==================== CONFIG YÜKLEME ====================
 def load_risk_weights():
@@ -98,9 +61,6 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     if df_iptal.empty:
         return {}
     
-    # CACHE MUTATE SORUNU - Kopya al!
-    df_iptal = df_iptal.copy()
-    
     # Sabit sütun isimleri - doğrudan kullan
     col_magaza = 'Mağaza - Anahtar'
     col_malzeme = 'Malzeme - Anahtar'
@@ -108,7 +68,6 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     col_saat = 'Fiş Saati'
     col_miktar = 'Miktar'
     col_islem_no = 'İşlem Numarası'
-    col_kasa = 'Kasa numarası'  # YENİ - Direkt kasa numarası kolonu
     
     # Sütunlar yoksa index ile dene
     cols = df_iptal.columns.tolist()
@@ -122,9 +81,6 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         col_saat = cols[31]
     if col_islem_no not in cols and len(cols) > 36:
         col_islem_no = cols[36]
-    # Kasa numarası kolonu - index 20
-    if col_kasa not in cols and len(cols) > 20:
-        col_kasa = cols[20]
     
     # Mağaza ve Malzeme kodlarını temizle
     def clean_code(x):
@@ -155,7 +111,6 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         saat = row.get(col_saat, '')
         miktar = row.get(col_miktar, 0)
         islem_no = row.get(col_islem_no, '')
-        kasa_no = row.get(col_kasa, '')  # YENİ - Direkt kasa numarası
         
         if malzeme not in result:
             result[malzeme] = []
@@ -164,8 +119,7 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
             'tarih': tarih,
             'saat': saat,
             'miktar': miktar,
-            'islem_no': islem_no,
-            'kasa_no': kasa_no  # YENİ
+            'islem_no': islem_no
         })
     
     return result
@@ -215,9 +169,8 @@ def enrich_internal_theft_with_camera(internal_df, magaza_kodu, envanter_tarihi,
             kategori = row.get(kategori_col, '')
             if kategori and kategori not in kategori_urunleri:
                 # Bu kategorideki 100+ TL ürünleri bul
-                if kategori_col in full_df.columns:
-                    price = _get_price_col(full_df)
-                    kat_mask = (full_df[kategori_col] == kategori) & (price >= 100)
+                if kategori_col in full_df.columns and 'Satış Fiyatı' in full_df.columns:
+                    kat_mask = (full_df[kategori_col] == kategori) & (full_df['Satış Fiyatı'] >= 100)
                     kat_urunler = full_df.loc[kat_mask, 'Malzeme Kodu'].astype(str).unique().tolist()
                     kategori_urunleri[kategori] = kat_urunler
     
@@ -311,17 +264,17 @@ def _ara_iptal_kaydi(malzeme_kodu, iptal_data, kamera_limit):
     for iptal in son_15_gun_sorted[:3]:  # En fazla 3 kayıt göster
         tarih = iptal['tarih_dt'].strftime('%d.%m.%Y')
         saat = str(iptal.get('saat', ''))[:8]
+        islem_no = str(iptal.get('islem_no', ''))
         
-        # Direkt kasa numarası kolonundan al
-        kasa_no = str(iptal.get('kasa_no', '')).strip()
-        if kasa_no and kasa_no != 'nan' and kasa_no != '':
-            # Kasa numarasını temizle (float'tan gelen .0'ı kaldır)
-            kasa_no = kasa_no.replace('.0', '')
-            kasa_str = f"K{kasa_no}"
-        else:
-            kasa_str = ""
+        # İşlem numarasından kasa numarasını çıkar (örn: 79150012711503250661 -> pozisyon 4-5)
+        kasa_no = ""
+        if len(islem_no) >= 6:
+            try:
+                kasa_no = f"Kasa:{int(islem_no[4:6])}"
+            except:
+                kasa_no = ""
         
-        detaylar.append(f"{tarih} {saat} {kasa_str}".strip())
+        detaylar.append(f"{tarih} {saat} {kasa_no}".strip())
     
     return {
         'bulundu': True,
@@ -330,17 +283,9 @@ def _ara_iptal_kaydi(malzeme_kodu, iptal_data, kamera_limit):
 
 
 # ==================== SUPABASE BAĞLANTISI ====================
-# Güvenlik: Credentials SADECE st.secrets'tan okunuyor
-# Streamlit Cloud'da Settings > Secrets'a ekle:
-# SUPABASE_URL = "https://xxx.supabase.co"
-# SUPABASE_KEY = "eyJxxx..."
-
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+# Güvenlik: Credentials st.secrets'tan okunuyor
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://tlcgcdiycgfxpxwzkwuf.supabase.co")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("⚠️ Supabase credentials eksik! Secrets'a SUPABASE_URL ve SUPABASE_KEY ekleyin.")
-    st.stop()
 
 @st.cache_resource
 def get_supabase_client():
@@ -354,27 +299,14 @@ def get_supabase_client():
 supabase: Client = get_supabase_client()
 
 # ==================== GİRİŞ SİSTEMİ ====================
-# Kullanıcılar st.secrets'tan okunur (güvenlik için)
-# Streamlit Cloud'da Settings > Secrets'a ekle:
-# [users]
-# ziya = "Gm2025!"
-# sm1 = "Sm12025!"
-# sm2 = "Sm22025!"
-# sm3 = "Sm32025!"
-# sm4 = "Sm42025!"
-# sma = "Sma2025!"
-
-def get_users():
-    """Kullanıcıları st.secrets'tan al"""
-    try:
-        if "users" in st.secrets:
-            return dict(st.secrets["users"])
-    except:
-        pass
-    # Fallback - geliştirme ortamı için (production'da kaldır)
-    return {}
-
-USERS = get_users()
+USERS = {
+    "ziya": "Gm2025!",
+    "sm1": "Sm12025!",
+    "sm2": "Sm22025!",
+    "sm3": "Sm32025!",
+    "sm4": "Sm42025!",
+    "sma": "Sma2025!",
+}
 
 def login():
     if "user" not in st.session_state:
@@ -540,16 +472,6 @@ def save_to_supabase(df_original):
             except Exception as e:
                 st.warning(f"Batch {i//batch_size + 1} hatası: {str(e)[:100]}")
         
-        # ✅ MATERIALIZED VIEW REFRESH - Veri yüklendikten sonra
-        if inserted > 0:
-            try:
-                # RPC ile refresh çağır (Supabase'de function oluşturulmalı)
-                supabase.rpc('refresh_mv_magaza_ozet').execute()
-            except Exception as e:
-                # RPC yoksa veya hata verirse sessizce devam et
-                # MV manuel refresh edilebilir
-                pass
-        
         new_list = [k.replace('|', ' / ') for k in new_env_keys]
         return inserted, len(skipped_env_keys), f"Yüklenen: {', '.join(new_list[:3])}..."
         
@@ -557,8 +479,13 @@ def save_to_supabase(df_original):
         return 0, 0, f"Hata: {str(e)}"
 
 
-# get_available_periods_from_supabase kaldırıldı - get_available_periods_cached() kullanılıyor
-# get_available_sms_from_supabase kaldırıldı - get_available_sms_cached() kullanılıyor
+@st.cache_data(ttl=600)  # 10 dakika cache
+# ⚠️ SİLİNDİ: get_available_periods_from_supabase
+# Artık VIEW üzerinden alınıyor: get_available_periods_cached()
+
+
+# ⚠️ SİLİNDİ: get_available_sms_from_supabase
+# Artık VIEW üzerinden alınıyor: get_available_sms_cached()
 
 
 @st.cache_data(ttl=600)  # 10 dakika cache
@@ -616,9 +543,6 @@ def get_single_store_data(magaza_kodu, donemler=None):
             
             if donemler and len(donemler) > 0:
                 query = query.in_('envanter_donemi', list(donemler))
-            
-            # ORDER ÖNEMLİ - Pagination için tutarlı sıralama
-            query = query.order('id')
             
             query = query.range(offset, offset + batch_size - 1)
             result = query.execute()
@@ -705,9 +629,6 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
             if donemler and len(donemler) > 0:
                 query = query.in_('envanter_donemi', donemler)
             
-            # ORDER ÖNEMLİ - Pagination için tutarlı sıralama şart
-            query = query.order('id')
-            
             # Pagination - limit ve offset
             query = query.range(offset, offset + batch_size - 1)
             
@@ -766,14 +687,16 @@ def get_data_from_supabase(satis_muduru=None, donemler=None):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=300)  # 5 dakika cache
+@st.cache_data(ttl=900)  # 15 dakika cache
 def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=None, tarih_bitis=None):
     """
-    SM/GM Özet ekranı için Supabase MATERIALIZED VIEW'den veri çek
-    mv_magaza_ozet kullanır - önceden hesaplanmış, çok hızlı
+    SM Özet ekranı için Supabase VIEW'den veri çek
+    PAGINATION YOK - Tek sorguda tüm mağaza özetleri gelir (~200-300 satır)
+    
+    tarih_baslangic, tarih_bitis: Envanter tarihi aralığı filtresi (opsiyonel)
     """
     try:
-        query = supabase.table('mv_magaza_ozet').select('*')
+        query = supabase.table('v_magaza_ozet').select('*')
         
         if satis_muduru:
             query = query.eq('satis_muduru', satis_muduru)
@@ -781,12 +704,11 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         if donemler and len(donemler) > 0:
             query = query.in_('envanter_donemi', donemler)
         
-        # Tarih aralığı filtresi - DOĞRU MANTIK
-        # "aralıkla çakışan mağazaları getir"
+        # Tarih aralığı filtresi
         if tarih_baslangic:
-            query = query.gte('max_envanter_tarihi', tarih_baslangic.strftime('%Y-%m-%d'))
+            query = query.gte('envanter_tarihi', tarih_baslangic.strftime('%Y-%m-%d'))
         if tarih_bitis:
-            query = query.lte('min_envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
+            query = query.lte('envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
         
         result = query.execute()
         
@@ -802,8 +724,7 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
             'satis_muduru': 'Satış Müdürü',
             'bolge_sorumlusu': 'Bölge Sorumlusu',
             'envanter_donemi': 'Envanter Dönemi',
-            'min_envanter_tarihi': 'Envanter Tarihi',
-            'max_envanter_tarihi': 'Envanter Tarihi Son',
+            'envanter_tarihi': 'Envanter Tarihi',
             'envanter_baslangic_tarihi': 'Envanter Başlangıç Tarihi',
             'fark_tutari': 'Fark Tutarı',
             'kismi_tutari': 'Kısmi Tutarı',
@@ -835,7 +756,7 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         try:
             df['Gün'] = (pd.to_datetime(df['Envanter Tarihi']) - 
                         pd.to_datetime(df['Envanter Başlangıç Tarihi'])).dt.days
-            df['Gün'] = df['Gün'].apply(lambda x: max(1, abs(x)) if pd.notna(x) else 1)
+            df['Gün'] = df['Gün'].apply(lambda x: max(1, x) if pd.notna(x) else 1)
         except:
             df['Gün'] = 1
         
@@ -845,7 +766,7 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         # Sigara açığı (negatifse açık var)
         df['Sigara'] = df['Sigara Net'].apply(lambda x: abs(x) if x < 0 else 0)
         
-        # Bölge ortalamalarını hesapla
+        # Bölge ortalamalarını hesapla (VIEW'den)
         bolge_ort = {
             'kayip_oran': df['Toplam %'].mean() if len(df) > 0 else 1,
             'ic_hirsizlik': df['İç Hırs.'].mean() if len(df) > 0 else 10,
@@ -853,70 +774,81 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
             'sigara': df['Sigara'].mean() if len(df) > 0 else 0,
         }
         
-        # Risk puanı hesapla
+        # Risk puanı hesapla (tam formül)
         def calc_risk_score(row):
-            score = 0
-            reasons = []
+            """
+            Risk puanı hesaplama (0-100)
+            Ağırlıklar:
+            - Kayıp Oranı: %30 (bölge ortalamasına göre)
+            - Sigara Açığı: %30
+            - İç Hırsızlık: %30 (bölge ortalamasına göre)
+            - Kronik Açık: %5
+            - 10TL Ürünleri: %5
+            """
+            puan = 0
             
-            # 1. Kayıp oranı
-            kayip = row['Toplam %']
-            if kayip > 2.0:
-                score += 40
-                reasons.append(f"Kayıp %{kayip:.1f}")
-            elif kayip > 1.5:
-                score += 25
-                reasons.append(f"Kayıp %{kayip:.1f}")
-            elif kayip > 1.0:
-                score += 15
+            # Kayıp Oranı (30 puan) - Bölge ortalamasına göre
+            kayip_oran = row.get('Toplam %', 0)
+            if bolge_ort['kayip_oran'] > 0:
+                kayip_ratio = kayip_oran / bolge_ort['kayip_oran']
+                kayip_puan = min(30, kayip_ratio * 15)
+            else:
+                kayip_puan = min(30, kayip_oran * 20)
+            puan += kayip_puan
             
-            # 2. İç hırsızlık
-            ic = row['İç Hırs.']
-            if ic > 50:
-                score += 30
-                reasons.append(f"İç Hırs. {ic:.0f}")
-            elif ic > 30:
-                score += 20
-            elif ic > 15:
-                score += 10
+            # Sigara Açığı (30 puan) - Her sigara kritik
+            sigara_count = row.get('Sigara', 0)
+            if sigara_count > 10:
+                sigara_puan = 30
+            elif sigara_count > 5:
+                sigara_puan = 25
+            elif sigara_count > 0:
+                sigara_puan = sigara_count * 4
+            else:
+                sigara_puan = 0
+            puan += sigara_puan
             
-            # 3. Sigara
-            sig = row['Sigara']
-            if sig > 5:
-                score += 35
-                reasons.append(f"Sigara {sig:.0f}")
-            elif sig > 0:
-                score += 20
-                reasons.append(f"Sigara {sig:.0f}")
+            # İç Hırsızlık (30 puan) - Bölge ortalamasına göre
+            ic_hirsizlik_count = row.get('İç Hırs.', 0)
+            if bolge_ort['ic_hirsizlik'] > 0:
+                ic_ratio = ic_hirsizlik_count / bolge_ort['ic_hirsizlik']
+                ic_puan = min(30, ic_ratio * 15)
+            else:
+                ic_puan = min(30, ic_hirsizlik_count * 0.5)
+            puan += ic_puan
             
-            # 4. Kronik
-            kr = row['Kronik']
-            if kr > 100:
-                score += 15
-                reasons.append(f"Kronik {kr:.0f}")
-            elif kr > 50:
-                score += 10
+            # Kronik Açık (5 puan)
+            kronik_count = row.get('Kronik', 0)
+            if bolge_ort['kronik'] > 0:
+                kronik_ratio = kronik_count / bolge_ort['kronik']
+                kronik_puan = min(5, kronik_ratio * 2.5)
+            else:
+                kronik_puan = min(5, kronik_count * 0.05)
+            puan += kronik_puan
             
-            # 5. Kasa aktivitesi (10TL ürünler)
-            kasa = abs(row.get('Kasa Tutar', 0) or 0)
-            if kasa > 5000:
-                score += 20
-                reasons.append(f"Kasa {kasa:,.0f}")
-            elif kasa > 2000:
-                score += 10
+            # 10TL Ürünleri (5 puan) - Fazla = şüpheli
+            kasa_adet = abs(row.get('Kasa Adet', 0))
+            if kasa_adet > 20:
+                kasa_puan = 5
+            elif kasa_adet > 10:
+                kasa_puan = 3
+            elif kasa_adet > 0:
+                kasa_puan = 1
+            else:
+                kasa_puan = 0
+            puan += kasa_puan
             
-            return score, ', '.join(reasons) if reasons else '-'
+            return min(100, max(0, puan))
         
-        df[['Risk Puan', 'Risk Nedenleri']] = df.apply(
-            lambda row: pd.Series(calc_risk_score(row)), axis=1
-        )
+        df['Risk Puan'] = df.apply(calc_risk_score, axis=1)
         
-        # Risk seviyesi
-        def get_risk_level(score):
-            if score >= 70:
+        # Risk seviyesi (puana göre)
+        def get_risk_level(puan):
+            if puan >= 60:
                 return '🔴 KRİTİK'
-            elif score >= 50:
+            elif puan >= 40:
                 return '🟠 RİSKLİ'
-            elif score >= 30:
+            elif puan >= 20:
                 return '🟡 DİKKAT'
             else:
                 return '🟢 TEMİZ'
@@ -929,8 +861,13 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         return df
         
     except Exception as e:
-        st.error(f"VIEW hatası: {e}")
+        st.error(f"VIEW hatası: {str(e)}")
         return pd.DataFrame()
+
+
+# ⚠️ SİLİNDİ: get_store_summary_fast
+# Artık VIEW kullanılıyor: get_sm_summary_from_view()
+# Bu fonksiyon performans katiliydi - mağaza mağaza loop yapıyordu
 
 
 # ==================== ANA UYGULAMA ====================
@@ -1060,43 +997,27 @@ def get_available_sms_cached():
 
 @st.cache_data(ttl=300)
 def get_envanter_tarihleri_by_donem(donemler_tuple):
-    """Seçilen dönemlerdeki envanter tarihlerini getir - MV'DEN"""
+    """Seçilen dönemlerdeki envanter tarihlerini getir - CACHED"""
     try:
         if not donemler_tuple:
             return []
-        donemler = list(donemler_tuple)
-        
-        # MV'den min/max tarihleri al - DOĞRU VE HIZLI
-        query = supabase.table('mv_magaza_ozet').select('min_envanter_tarihi,max_envanter_tarihi').in_('envanter_donemi', donemler)
+        donemler = list(donemler_tuple)  # tuple'ı list'e çevir
+        query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
         result = query.execute()
-        
         if result.data:
-            tarih_dates = set()
-            for r in result.data:
-                # Min tarih
-                min_t = r.get('min_envanter_tarihi')
-                if min_t:
-                    try:
-                        if isinstance(min_t, str):
-                            tarih_dates.add(pd.to_datetime(min_t).date())
-                        elif hasattr(min_t, 'date'):
-                            tarih_dates.add(min_t.date())
-                    except:
-                        pass
-                
-                # Max tarih
-                max_t = r.get('max_envanter_tarihi')
-                if max_t:
-                    try:
-                        if isinstance(max_t, str):
-                            tarih_dates.add(pd.to_datetime(max_t).date())
-                        elif hasattr(max_t, 'date'):
-                            tarih_dates.add(max_t.date())
-                    except:
-                        pass
-            
+            tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
+            # Tarihleri datetime'a çevir ve sırala
+            tarih_dates = []
+            for t in tarihler:
+                try:
+                    if isinstance(t, str):
+                        tarih_dates.append(pd.to_datetime(t).date())
+                    else:
+                        tarih_dates.append(t)
+                except:
+                    pass
             return sorted(tarih_dates)
-    except Exception as e:
+    except:
         pass
     return []
 
@@ -1120,91 +1041,32 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Kullanıcı bilgisi
+# Mod seçimi - Kullanıcıya göre
 current_user = st.session_state.user
 is_gm = current_user == "ziya"
 
-# ==================== YENİ UI YAPISI ====================
-# Dosya yükleme (üstte)
-uploaded_file = st.file_uploader("📁 Excel dosyası yükleyin (Parçalı veya Sürekli - otomatik algılanır)", type=['xlsx', 'xls'])
+# Mod ve yenileme butonları
+col_mode, col_refresh = st.columns([6, 1])
 
-# Dosya yüklendiyse işle ve session state'e kaydet
-if uploaded_file is not None:
-    try:
-        xl = pd.ExcelFile(uploaded_file)
-        best_sheet = None
-        max_cols = 0
-        for sheet in xl.sheet_names:
-            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
-            if len(temp_df.columns) > max_cols:
-                max_cols = len(temp_df.columns)
-                best_sheet = sheet
-        
-        df_uploaded = pd.read_excel(uploaded_file, sheet_name=best_sheet)
-        
-        # Otomatik algılama
-        if SUREKLI_MODULE_LOADED:
-            detected_type = detect_envanter_type(df_uploaded)
-        else:
-            detected_type = 'parcali'
-        
-        st.session_state['uploaded_df'] = df_uploaded
-        st.session_state['uploaded_type'] = detected_type
-        
-        if detected_type == 'surekli':
-            st.success(f"✅ **Sürekli Envanter** algılandı: {len(df_uploaded)} satır")
-        else:
-            st.success(f"✅ **Parçalı Envanter** algılandı: {len(df_uploaded)} satır")
-            
-    except Exception as e:
-        st.error(f"Dosya okuma hatası: {str(e)}")
-
-# Dosya kaldırıldıysa session'ı temizle
-if uploaded_file is None and 'uploaded_df' in st.session_state:
-    del st.session_state['uploaded_df']
-    if 'uploaded_type' in st.session_state:
-        del st.session_state['uploaded_type']
-
-st.markdown("---")
-
-# ==================== ÜST SEKMELER ====================
-if is_gm:
-    ust_sekme = st.radio("📊 Görünüm", ["👤 SM Özet", "👥 BS Özet", "🌐 GM Özet"], horizontal=True)
-else:
-    ust_sekme = st.radio("📊 Görünüm", ["👤 SM Özet", "👥 BS Özet"], horizontal=True)
-
-# Yenileme butonu
-col_spacer, col_refresh = st.columns([10, 1])
-with col_refresh:
-    if st.button("🔄", help="Verileri yenile"):
-        st.cache_data.clear()
-        st.rerun()
-
-# ==================== ALT SEKMELER (Parçalı / Sürekli) ====================
-alt_sekme = st.radio("📦 Envanter Tipi", ["📦 Parçalı", "🔄 Sürekli"], horizontal=True)
-
-st.markdown("---")
-
-# Analysis mode belirleme (eski kodla uyumluluk için)
-if alt_sekme == "📦 Parçalı":
-    if ust_sekme == "👤 SM Özet":
-        analysis_mode = "👔 SM Özet"
-    elif ust_sekme == "👥 BS Özet":
-        analysis_mode = "👥 BS Özet"
-    elif ust_sekme == "🌐 GM Özet":
-        analysis_mode = "🌍 GM Özet"
+with col_mode:
+    if is_gm:
+        analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet", "🌍 GM Özet"], horizontal=True)
     else:
-        analysis_mode = "📦 Parçalı"
-else:  # Sürekli
-    analysis_mode = "🔄 Sürekli Envanter"
-    # Dosya yüklendiyse df_surekli'ye kaydet
-    if 'uploaded_df' in st.session_state:
-        # Sürekli mi kontrol et
-        if st.session_state.get('uploaded_type') == 'surekli':
-            st.session_state['df_surekli'] = st.session_state['uploaded_df']
-        else:
-            # Parçalı dosya yüklendi ama sürekli sekmesindeyiz - uyarı ver
-            st.warning("⚠️ Yüklenen dosya parçalı envanter. Sürekli envanter dosyası yükleyin.")
+        analysis_mode = st.radio("📊 Analiz Modu", ["🏪 Tek Mağaza", "🌍 Bölge Özeti", "👔 SM Özet"], horizontal=True)
+
+with col_refresh:
+    if analysis_mode in ["👔 SM Özet", "🌍 GM Özet"]:
+        if st.button("🔄", help="Verileri yenile"):
+            if "df_all" in st.session_state:
+                del st.session_state.df_all
+            st.rerun()
+
+# SM Özet ve GM Özet modları için dosya yükleme gerekmez
+if analysis_mode not in ["👔 SM Özet", "🌍 GM Özet"]:
+    # Dosya yükleme - direkt ekranda
+    uploaded_file = st.file_uploader("📁 Excel dosyası yükleyin", type=['xlsx', 'xls'])
+else:
+    uploaded_file = None
 
 
 def analyze_inventory(df):
@@ -1951,10 +1813,8 @@ def compute_sigara_acik_by_store(df: pd.DataFrame) -> pd.Series:
     if sig_df.empty:
         return pd.Series(dtype=float)
     
-    # Net değeri hesapla - DOĞRU YOL (alignment sorunu yok)
-    sig_df['net'] = 0.0
-    if 'Fark Miktarı' in sig_df.columns:
-        sig_df['net'] += sig_df['Fark Miktarı'].fillna(0)
+    # Net değeri hesapla
+    sig_df['net'] = sig_df.get('Fark Miktarı', pd.Series(0)).fillna(0)
     if 'Kısmi Envanter Miktarı' in sig_df.columns:
         sig_df['net'] += sig_df['Kısmi Envanter Miktarı'].fillna(0)
     if 'Önceki Fark Miktarı' in sig_df.columns:
@@ -2019,9 +1879,11 @@ def analyze_region(df, kasa_kodlari):
     
     # ===== HIZLI RİSK ANALİZLERİ (vektörel) =====
     
-    # 1. İç Hırsızlık - Fiyat >= 100 ve Fark < 0 olan ürün sayısı
-    price = _get_price_col(df)
-    ic_hirsizlik = df[(price >= 100) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
+    # 1. İç Hırsızlık - Satış Fiyatı >= 100 ve Fark < 0 olan ürün sayısı
+    if 'Satış Fiyatı' in df.columns:
+        ic_hirsizlik = df[(df['Satış Fiyatı'] >= 100) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
+    else:
+        ic_hirsizlik = pd.Series(0, index=magazalar)
     
     # 2. Kronik Açık - Önceki Fark < 0 ve Fark < 0 olan ürün sayısı
     kronik = df[(df['Önceki Fark Miktarı'] < 0) & (df['Fark Miktarı'] < 0)].groupby('Mağaza Kodu').size()
@@ -2995,11 +2857,10 @@ if analysis_mode == "👔 SM Özet":
         
         if donem_tarihleri and len(donem_tarihleri) > 1:
             with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
-                min_tarih = min(donem_tarihleri)
-                max_tarih = max(donem_tarihleri)
-                
-                col_t1, col_t2, col_t3 = st.columns([2, 2, 1])
+                col_t1, col_t2 = st.columns(2)
                 with col_t1:
+                    min_tarih = min(donem_tarihleri)
+                    max_tarih = max(donem_tarihleri)
                     tarih_baslangic = st.date_input(
                         "Başlangıç Tarihi", 
                         value=min_tarih,
@@ -3015,11 +2876,6 @@ if analysis_mode == "👔 SM Özet":
                         max_value=max_tarih,
                         key="sm_tarih_bit"
                     )
-                with col_t3:
-                    st.write("")  # Boşluk için
-                    st.write("")  # Hizalama için
-                    if st.button("🗑️ Temizle", key="sm_clear_tarih", help="Tarih filtresini kaldır"):
-                        st.rerun()
                 
                 # Eğer varsayılan değerler seçiliyse filtre uygulanmasın
                 if tarih_baslangic == min_tarih and tarih_bitis == max_tarih:
@@ -3408,11 +3264,10 @@ elif analysis_mode == "🌍 GM Özet":
         
         if donem_tarihleri and len(donem_tarihleri) > 1:
             with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
-                min_tarih = min(donem_tarihleri)
-                max_tarih = max(donem_tarihleri)
-                
-                col_t1, col_t2, col_t3 = st.columns([2, 2, 1])
+                col_t1, col_t2 = st.columns(2)
                 with col_t1:
+                    min_tarih = min(donem_tarihleri)
+                    max_tarih = max(donem_tarihleri)
                     gm_tarih_baslangic = st.date_input(
                         "Başlangıç Tarihi", 
                         value=min_tarih,
@@ -3428,12 +3283,6 @@ elif analysis_mode == "🌍 GM Özet":
                         max_value=max_tarih,
                         key="gm_tarih_bit"
                     )
-                with col_t3:
-                    st.write("")  # Boşluk için
-                    st.write("")  # Hizalama için
-                    if st.button("🗑️ Temizle", key="gm_clear_tarih", help="Tarih filtresini kaldır"):
-                        # Session state'i temizle ve sayfayı yenile
-                        st.rerun()
                 
                 # Eğer varsayılan değerler seçiliyse filtre uygulanmasın
                 if gm_tarih_baslangic == min_tarih and gm_tarih_bitis == max_tarih:
@@ -3797,12 +3646,24 @@ elif analysis_mode == "🌍 GM Özet":
                     - 🏪 Tüm Mağazalar (Risk puanına göre sıralı)
                     """)
 
-# ==================== PARÇALI ENVANTER ANALİZİ (Dosyadan) ====================
-elif analysis_mode == "📦 Parçalı" and 'uploaded_df' in st.session_state and st.session_state.get('uploaded_type') == 'parcali':
-    df_raw = st.session_state['uploaded_df']
-    
+elif uploaded_file is not None:
     try:
-        # Supabase'e kaydet
+        xl = pd.ExcelFile(uploaded_file)
+        sheet_names = xl.sheet_names
+        
+        best_sheet = None
+        max_cols = 0
+        
+        for sheet in sheet_names:
+            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
+            if len(temp_df.columns) > max_cols:
+                max_cols = len(temp_df.columns)
+                best_sheet = sheet
+        
+        df_raw = pd.read_excel(uploaded_file, sheet_name=best_sheet)
+        st.success(f"✅ {len(df_raw)} satır, {len(df_raw.columns)} sütun ({best_sheet})")
+        
+        # ===== ARKA PLANDA SUPABASE'E KAYIT =====
         with st.spinner("Veritabanına kaydediliyor..."):
             try:
                 inserted, skipped, result_info = save_to_supabase(df_raw)
@@ -3811,6 +3672,7 @@ elif analysis_mode == "📦 Parçalı" and 'uploaded_df' in st.session_state and
                 elif skipped > 0:
                     st.info(f"⏭️ Tüm envanterler zaten mevcut ({skipped} envanter)")
             except Exception as e:
+                # Supabase hatası analizi engellemesin
                 st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:50]}")
         
         df = analyze_inventory(df_raw)
@@ -4385,240 +4247,6 @@ elif analysis_mode == "📦 Parçalı" and 'uploaded_df' in st.session_state and
         st.error(f"Hata: {str(e)}")
         st.exception(e)
 
-# ==================== SÜREKLİ ENVANTER MODU ====================
-elif analysis_mode == "🔄 Sürekli Envanter" and SUREKLI_MODULE_LOADED:
-    st.markdown("## 🔄 Sürekli Envanter Analizi")
-    st.caption("Et-Tavuk, Ekmek, Meyve/Sebze aylık envanter takibi")
-    
-    # Dosya yüklenmişse kullan
-    has_df_surekli = 'df_surekli' in st.session_state and st.session_state['df_surekli'] is not None
-    
-    if has_df_surekli:
-        df_surekli = st.session_state['df_surekli']
-        magazalar = df_surekli['Mağaza Kodu'].unique().tolist() if 'Mağaza Kodu' in df_surekli.columns else []
-        
-        # Envanter dönemi
-        envanter_donemi = str(df_surekli['Envanter Dönemi'].iloc[0]) if 'Envanter Dönemi' in df_surekli.columns else ''
-        
-        # ===== SUPABASE'E DETAY KAYIT =====
-        with st.spinner("Veritabanına kaydediliyor..."):
-            try:
-                records = prepare_detay_kayitlar(df_surekli)
-                if records:
-                    inserted, skipped = save_detay_to_supabase(supabase, records)
-                    if inserted > 0:
-                        st.success(f"💾 {inserted} ürün kaydı eklendi ({len(magazalar)} mağaza)")
-                    elif skipped > 0:
-                        st.info(f"⏭️ Kayıtlar zaten mevcut")
-            except Exception as e:
-                st.warning(f"⚠️ Veritabanı kaydı atlandı: {str(e)[:100]}")
-        
-        # Önceki kayıtları çek (karşılaştırma için)
-        df_onceki = None
-        if magazalar:
-            try:
-                df_onceki = get_magaza_onceki_kayitlar(supabase, str(magazalar[0]), envanter_donemi)
-                if not df_onceki.empty:
-                    st.info(f"📊 Önceki {len(df_onceki)} kayıt ile karşılaştırılıyor")
-            except:
-                pass
-        
-        # Alt sekmeler
-        surekli_tabs = st.tabs(["📊 Özet", "🏆 Top 10", "📈 SM/BS Analizi", "📋 Sayım Disiplini", "🚨 Risk Analizi"])
-        
-        with surekli_tabs[0]:  # ÖZET
-            st.subheader("📊 Genel Özet")
-            kat_ozet = hesapla_kategori_ozet(df_surekli)
-            
-            if kat_ozet:
-                cols = st.columns(len(kat_ozet) + 1)
-                toplam_fark, toplam_fire, toplam_satis = 0, 0, 0
-                
-                for i, (kat, data) in enumerate(kat_ozet.items()):
-                    with cols[i]:
-                        emoji = "🥩" if "Et" in kat else "🍞" if "Ekmek" in kat else "🥬"
-                        st.metric(f"{emoji} {kat}", f"{data['fark']:,.0f} TL", f"Fire: {data['fire']:,.0f} TL | %{data['oran']:.1f}")
-                    toplam_fark += data['fark']
-                    toplam_fire += data['fire']
-                    toplam_satis += data['satis']
-                
-                with cols[-1]:
-                    toplam_kayip = abs(toplam_fark) + abs(toplam_fire)
-                    toplam_oran = (toplam_kayip / toplam_satis * 100) if toplam_satis > 0 else 0
-                    st.metric("📊 TOPLAM", f"{toplam_fark + toplam_fire:,.0f} TL", f"Oran: %{toplam_oran:.2f}")
-            
-            # Tek mağaza ise risk skoru göster
-            if len(magazalar) == 1:
-                st.markdown("---")
-                magaza = magazalar[0]
-                magaza_adi_col = 'Mağaza Adı' if 'Mağaza Adı' in df_surekli.columns else 'Mağaza Tanım' if 'Mağaza Tanım' in df_surekli.columns else None
-                magaza_adi = df_surekli[magaza_adi_col].iloc[0] if magaza_adi_col else ''
-                magaza_bilgi = get_magaza_bilgi(str(magaza))
-                
-                st.subheader(f"🏪 {magaza} - {magaza_adi}")
-                st.caption(f"SM: {magaza_bilgi['sm']} | BS: {magaza_bilgi['bs']}")
-                
-                risk = hesapla_risk_skoru(df_surekli)
-                
-                col1, col2 = st.columns([1, 3])
-                with col1:
-                    bg_color = '#ff4444' if risk['seviye']=='kritik' else '#ff8800' if risk['seviye']=='riskli' else '#ffcc00' if risk['seviye']=='dikkat' else '#44aa44'
-                    st.markdown(f"""
-                    <div style="text-align:center; padding:20px; background:{bg_color}; border-radius:10px;">
-                        <h2 style="color:white; margin:0;">{risk['emoji']} {risk['toplam_puan']}/{risk['max_puan']}</h2>
-                        <p style="color:white; margin:0;">{risk['seviye'].upper()}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    st.markdown("**📋 Risk Detayları:** *(Detay için tıklayın)*")
-                
-                # Expander'lı risk detayları
-                for key, val in risk['detaylar'].items():
-                    status = "🔴" if val['puan'] >= val['max'] * 0.7 else "🟡" if val['puan'] > 0 else "✅"
-                    kriter_adi = key.replace('_', ' ').title()
-                    aciklama = val.get('aciklama', '')
-                    detay_list = val.get('detay', [])
-                    
-                    with st.expander(f"{status} **{kriter_adi}**: {val['puan']}/{val['max']} - {aciklama}"):
-                        if detay_list:
-                            st.dataframe(pd.DataFrame(detay_list), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("Bu kriterde sorun tespit edilmedi")
-            
-            elif len(magazalar) > 1:
-                st.markdown("---")
-                st.info(f"📦 {len(magazalar)} mağaza yüklendi. Detaylı analiz için diğer sekmelere gidin.")
-        
-        with surekli_tabs[1]:  # TOP 10
-            st.subheader("🏆 En Riskli Mağazalar ve Ürünler")
-            top10 = hesapla_top10(df_surekli)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### 🏪 Top 10 Riskli Mağaza")
-                if 'top10_magaza' in top10 and len(top10['top10_magaza']) > 0:
-                    df_top = top10['top10_magaza'][['Mağaza Kodu', 'Mağaza Adı', 'Kayıp', 'Oran', 'SM']].copy()
-                    df_top['Oran'] = df_top['Oran'].apply(lambda x: f"%{x:.1f}")
-                    df_top['Kayıp'] = df_top['Kayıp'].apply(lambda x: f"{x:,.0f} TL")
-                    st.dataframe(df_top, use_container_width=True, hide_index=True)
-            
-            with col2:
-                st.markdown("### 📉 Top 5 Açık Veren Ürün")
-                if top10.get('top5_acik') is not None and len(top10['top5_acik']) > 0:
-                    df_acik = top10['top5_acik'].copy()
-                    df_acik['Fark'] = df_acik['Fark'].apply(lambda x: f"{x:,.0f} TL")
-                    st.dataframe(df_acik, use_container_width=True, hide_index=True)
-                
-                st.markdown("### 🔥 Top 5 Fire Yazılan Ürün")
-                if top10.get('top5_fire') is not None and len(top10['top5_fire']) > 0:
-                    df_fire = top10['top5_fire'].copy()
-                    df_fire['Fire'] = df_fire['Fire'].apply(lambda x: f"{x:,.0f} TL")
-                    st.dataframe(df_fire, use_container_width=True, hide_index=True)
-        
-        with surekli_tabs[2]:  # SM/BS ANALİZİ
-            st.subheader("📈 SM/BS Özet")
-            
-            # SM Özet
-            st.markdown("### 👤 SM Bazlı Özet")
-            sm_ozet = hesapla_sm_ozet(df_surekli)
-            if len(sm_ozet) > 0:
-                sm_display = sm_ozet.copy()
-                sm_display['Fark'] = sm_display['Fark'].apply(lambda x: f"{x:,.0f}")
-                sm_display['Fire'] = sm_display['Fire'].apply(lambda x: f"{x:,.0f}")
-                sm_display['Satış'] = sm_display['Satış'].apply(lambda x: f"{x:,.0f}")
-                sm_display['Oran'] = sm_display['Oran'].apply(lambda x: f"%{x:.1f}")
-                st.dataframe(sm_display, use_container_width=True, hide_index=True)
-        
-        with surekli_tabs[3]:  # SAYIM DİSİPLİNİ
-            st.subheader("📋 Sayım Disiplini Takibi")
-            st.caption("Her üründe ayda 4 sayım bekleniyor")
-            
-            sayim = hesapla_sayim_disiplini(df_surekli)
-            
-            # Özet metrikler
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Beklenen Sayım", sayim['beklenen_sayim'])
-            with col2:
-                eksik_urun = len(sayim['urunler'])
-                toplam_urun = len(df_surekli)
-                st.metric("Eksik Sayım", f"{eksik_urun}/{toplam_urun}")
-            with col3:
-                oran = (toplam_urun - eksik_urun) / max(toplam_urun, 1) * 100
-                st.metric("Tamamlanma", f"%{oran:.0f}")
-            
-            # Eksik sayım detayları
-            if sayim['urunler']:
-                st.markdown("### ⚠️ Eksik Sayım Yapılan Ürünler")
-                st.dataframe(pd.DataFrame(sayim['urunler']), use_container_width=True, hide_index=True)
-        
-        with surekli_tabs[4]:  # RİSK ANALİZİ
-            st.subheader("🚨 Risk Analizi")
-            
-            # Risk skoru hesapla
-            risk = hesapla_risk_skoru(df_surekli, df_onceki)
-            
-            # Özet
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                bg_color = '#ff4444' if risk['seviye']=='kritik' else '#ff8800' if risk['seviye']=='riskli' else '#ffcc00' if risk['seviye']=='dikkat' else '#44aa44'
-                st.markdown(f"""
-                <div style="text-align:center; padding:20px; background:{bg_color}; border-radius:10px;">
-                    <h2 style="color:white; margin:0;">{risk['emoji']} {risk['toplam_puan']}/{risk['max_puan']}</h2>
-                    <p style="color:white; margin:0;">{risk['seviye'].upper()}</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown("**📋 Risk Kriterleri** *(Detay için tıklayın)*")
-            
-            # Expander'lı risk detayları
-            for key, val in risk['detaylar'].items():
-                status = "🔴" if val['puan'] >= val['max'] * 0.7 else "🟡" if val['puan'] > 0 else "✅"
-                kriter_adi = key.replace('_', ' ').title()
-                aciklama = val.get('aciklama', '')
-                detay_list = val.get('detay', [])
-                
-                with st.expander(f"{status} **{kriter_adi}**: {val['puan']}/{val['max']} - {aciklama}"):
-                    if detay_list:
-                        st.dataframe(pd.DataFrame(detay_list), use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Bu kriterde sorun tespit edilmedi veya önceki veri bekleniyor")
-    else:
-        # Dosya yüklenmemiş - Supabase özet göster
-        st.info("📊 Sürekli envanter dosyası yükleyin veya aşağıdan Supabase özetini görüntüleyin")
-        
-        try:
-            result = supabase.table('surekli_envanter_detay').select('*').order('yukleme_zamani', desc=True).limit(1000).execute()
-            
-            if result.data:
-                df_ozet = pd.DataFrame(result.data)
-                st.success(f"✅ Supabase'den {len(result.data)} kayıt yüklendi")
-                
-                # SM bazlı özet
-                if 'sm' in df_ozet.columns:
-                    sm_ozet = df_ozet.groupby('sm').agg({
-                        'magaza_kodu': 'nunique',
-                        'fark_tutari': 'sum',
-                        'fire_tutari': 'sum',
-                        'satis_hasilati': 'sum'
-                    }).reset_index()
-                    sm_ozet.columns = ['SM', 'Mağaza', 'Fark', 'Fire', 'Satış']
-                    sm_ozet['Kayıp'] = abs(sm_ozet['Fark']) + abs(sm_ozet['Fire'])
-                    sm_ozet['Oran'] = (sm_ozet['Kayıp'] / sm_ozet['Satış'] * 100).round(2)
-                    sm_ozet = sm_ozet.sort_values('Oran', ascending=False)
-                    
-                    st.subheader("👤 SM Bazlı Sürekli Envanter Özeti")
-                    st.dataframe(sm_ozet, use_container_width=True, hide_index=True)
-            else:
-                st.warning("⚠️ Henüz sürekli envanter verisi yok")
-        except Exception as e:
-            st.warning(f"⚠️ Supabase bağlantı hatası: {str(e)[:50]}")
-
 else:
-    # Veri yok durumu
-    if uploaded_file is None and alt_sekme == "📦 Parçalı":
-        st.info("👆 Parçalı envanter analizi için Excel dosyası yükleyin")
-    elif uploaded_file is None and alt_sekme == "🔄 Sürekli":
-        st.info("👆 Sürekli envanter analizi için Excel dosyası yükleyin")
+    if analysis_mode != "👔 SM Özet":
+        st.info("👆 Excel dosyası yükleyin")
