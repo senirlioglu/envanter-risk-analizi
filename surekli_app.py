@@ -387,7 +387,7 @@ def get_gm_ozet_data(donemler):
             offset = 0
             while True:
                 result = supabase.table(TABLE_NAME).select(
-                    'magaza_kodu,magaza_tanim,satis_muduru,depolama_kosulu_grubu,fark_tutari,fire_tutari,satis_hasilati'
+                    'magaza_kodu,magaza_tanim,satis_muduru,depolama_kosulu,fark_tutari,fire_tutari,satis_hasilati'
                 ).eq(
                     'envanter_donemi', donem
                 ).limit(batch_size).offset(offset).execute()
@@ -591,15 +591,15 @@ def main_app():
 
                 # Kategori bazlı hesapla
                 kat_data = {}
-                if 'depolama_kosulu_grubu' in gm_df.columns:
-                    kat_ozet = gm_df.groupby('depolama_kosulu_grubu').agg({
+                if 'depolama_kosulu' in gm_df.columns:
+                    kat_ozet = gm_df.groupby('depolama_kosulu').agg({
                         'fark_tutari': 'sum',
                         'fire_tutari': 'sum',
                         'satis_hasilati': 'sum'
                     }).reset_index()
 
                     for _, row in kat_ozet.iterrows():
-                        kat = str(row['depolama_kosulu_grubu'] or '').upper()
+                        kat = str(row['depolama_kosulu'] or '').upper()
                         satis = row['satis_hasilati']
                         fark = row['fark_tutari']
                         fire = row['fire_tutari']
