@@ -635,8 +635,14 @@ def main_app():
                 file_name = uploaded_file.name.lower()
 
                 if file_name.endswith('.csv'):
-                    # CSV oku
-                    df = pd.read_csv(uploaded_file)
+                    # CSV oku - önce noktalı virgül, sonra virgül, sonra tab dene
+                    df = pd.read_csv(uploaded_file, sep=';')
+                    if len(df.columns) <= 1:
+                        uploaded_file.seek(0)
+                        df = pd.read_csv(uploaded_file, sep=',')
+                    if len(df.columns) <= 1:
+                        uploaded_file.seek(0)
+                        df = pd.read_csv(uploaded_file, sep='\t')
                     st.success(f"✅ {len(df)} satır, {len(df.columns)} sütun yüklendi (CSV)")
                 else:
                     # Excel oku
