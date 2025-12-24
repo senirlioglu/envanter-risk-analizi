@@ -589,50 +589,83 @@ def main_app():
                 st.markdown("---")
                 st.subheader(f"📊 Bölge Özeti - {magaza_sayisi} Mağaza")
 
-                # Üst metrikler
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("💰 Satış", f"₺{toplam_satis:,.0f}")
-                col2.metric("📉 Fark", f"₺{toplam_fark:,.0f}", f"%{fark_oran:.2f}")
-                col3.metric("🔥 Fire", f"₺{toplam_fire:,.0f}", f"%{fire_oran:.2f}")
-                col4.metric("📊 Toplam Açık", f"₺{toplam_acik:,.0f}", f"%{acik_oran:.2f}")
-
-                # Kategori bazlı kırılım
+                # Kategori bazlı hesapla
+                kat_data = {}
                 if 'depolama_kosulu_grubu' in gm_df.columns:
-                    st.markdown("---")
-                    st.markdown("### 📦 Kategori Bazlı Kırılım")
-
                     kat_ozet = gm_df.groupby('depolama_kosulu_grubu').agg({
                         'fark_tutari': 'sum',
                         'fire_tutari': 'sum',
                         'satis_hasilati': 'sum'
                     }).reset_index()
-                    kat_ozet['acik'] = kat_ozet['fark_tutari'] + kat_ozet['fire_tutari']
-
-                    # Başlık
-                    h1, h2, h3, h4, h5 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
-                    h1.markdown("**Kategori**")
-                    h2.markdown("**Satış**")
-                    h3.markdown("**Fark**")
-                    h4.markdown("**Fire**")
-                    h5.markdown("**Toplam Açık**")
 
                     for _, row in kat_ozet.iterrows():
-                        kat = row['depolama_kosulu_grubu'] or 'Diğer'
+                        kat = str(row['depolama_kosulu_grubu'] or '').upper()
                         satis = row['satis_hasilati']
                         fark = row['fark_tutari']
                         fire = row['fire_tutari']
-                        acik = row['acik']
+                        acik = fark + fire
 
-                        fark_pct = (fark / satis * 100) if satis != 0 else 0
-                        fire_pct = (fire / satis * 100) if satis != 0 else 0
-                        acik_pct = (acik / satis * 100) if satis != 0 else 0
+                        # Emoji belirle
+                        if 'ET' in kat or 'TAVUK' in kat:
+                            emoji = '🐓'
+                        elif 'MEYVE' in kat or 'SEBZE' in kat:
+                            emoji = '🥦'
+                        elif 'EKMEK' in kat:
+                            emoji = '🥖'
+                        else:
+                            emoji = '📦'
 
-                        c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
-                        c1.write(f"**{kat}**")
-                        c2.write(f"₺{satis:,.0f}")
-                        c3.write(f"₺{fark:,.0f} ({fark_pct:.2f}%)")
-                        c4.write(f"₺{fire:,.0f} ({fire_pct:.2f}%)")
-                        c5.write(f"₺{acik:,.0f} ({acik_pct:.2f}%)")
+                        kat_data[emoji] = {
+                            'satis': satis,
+                            'fark': fark,
+                            'fire': fire,
+                            'acik': acik,
+                            'fark_pct': (fark / satis * 100) if satis != 0 else 0,
+                            'fire_pct': (fire / satis * 100) if satis != 0 else 0,
+                            'acik_pct': (acik / satis * 100) if satis != 0 else 0
+                        }
+
+                # Kısa format fonksiyonu
+                def format_k(val):
+                    if abs(val) >= 1000000:
+                        return f"{val/1000000:.1f}M"
+                    elif abs(val) >= 1000:
+                        return f"{val/1000:.0f}K"
+                    return f"{val:.0f}"
+
+                # Kategori satırı oluştur
+                def kat_line(field):
+                    parts = []
+                    for emoji in ['🐓', '🥦', '🥖']:
+                        if emoji in kat_data:
+                            val = kat_data[emoji][field]
+                            pct = kat_data[emoji][f'{field}_pct']
+                            parts.append(f"{emoji}: ₺{format_k(val)} | {pct:.2f}%")
+                    return " ".join(parts)
+
+                # Üst metrikler
+                col1, col2, col3, col4 = st.columns(4)
+
+                with col1:
+                    st.metric("💰 Satış", f"₺{toplam_satis:,.0f}")
+                    if kat_data:
+                        satis_parts = " ".join([f"{e}: ₺{format_k(kat_data[e]['satis'])}" for e in ['🐓', '🥦', '🥖'] if e in kat_data])
+                        st.caption(satis_parts)
+
+                with col2:
+                    st.metric("📉 Fark", f"₺{toplam_fark:,.0f}", f"%{fark_oran:.2f}")
+                    if kat_data:
+                        st.caption(kat_line('fark'))
+
+                with col3:
+                    st.metric("🔥 Fire", f"₺{toplam_fire:,.0f}", f"%{fire_oran:.2f}")
+                    if kat_data:
+                        st.caption(kat_line('fire'))
+
+                with col4:
+                    st.metric("📊 Toplam Açık", f"₺{toplam_acik:,.0f}", f"%{acik_oran:.2f}")
+                    if kat_data:
+                        st.caption(kat_line('acik'))
 
             else:
                 st.warning("Seçili dönem için veri bulunamadı.")
