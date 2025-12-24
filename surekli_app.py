@@ -663,81 +663,76 @@ def main_app():
                 if eksik_sutunlar:
                     st.error(f"❌ Eksik sütunlar: {', '.join(eksik_sutunlar)}")
                 else:
-                    # Analiz ve Değişim Tespit butonu
-                    if st.button("🔍 Değişim Tespit Et ve Analiz Et", use_container_width=True):
-                        with st.spinner("Veritabanı kontrol ediliyor..."):
-                            # Mevcut envanter sayılarını al
-                            if supabase:
-                                # Excel'den mağaza kodları ve dönem al
-                                magaza_kodlari = df['Mağaza Kodu'].astype(str).unique().tolist()
-                                envanter_donemi = df['Envanter Dönemi'].iloc[0] if 'Envanter Dönemi' in df.columns else None
+                    # Otomatik işlem - buton yok
+                    if supabase:
+                        # Excel'den mağaza kodları ve dönem al
+                        magaza_kodlari = df['Mağaza Kodu'].astype(str).unique().tolist()
+                        envanter_donemi = df['Envanter Dönemi'].iloc[0] if 'Envanter Dönemi' in df.columns else None
 
-                                mevcut_sayilar = get_mevcut_envanter_sayilari(magaza_kodlari, envanter_donemi)
+                        mevcut_sayilar = get_mevcut_envanter_sayilari(magaza_kodlari, envanter_donemi)
 
-                                # Değişim tespit et
-                                degisen_magazalar, degisen_urunler = detect_envanter_degisimi(df, mevcut_sayilar)
+                        # Değişim tespit et
+                        degisen_magazalar, degisen_urunler = detect_envanter_degisimi(df, mevcut_sayilar)
 
-                                st.markdown("---")
-                                st.markdown("### 📊 Değişim Analizi")
+                        st.markdown("---")
+                        st.markdown("### 📊 Değişim Analizi")
 
-                                col1, col2, col3, col4 = st.columns(4)
-                                with col1:
-                                    st.metric("📦 Toplam Satır", len(df))
-                                with col2:
-                                    toplam_magaza = df['Mağaza Kodu'].nunique()
-                                    st.metric("🏪 Toplam Mağaza", toplam_magaza)
-                                with col3:
-                                    st.metric("🔄 Yeni Sayım Yapan", len(degisen_magazalar))
-                                with col4:
-                                    degismeyen = toplam_magaza - len(degisen_magazalar)
-                                    st.metric("⏸️ Değişmeyen", degismeyen)
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("📦 Toplam Satır", len(df))
+                        with col2:
+                            toplam_magaza = df['Mağaza Kodu'].nunique()
+                            st.metric("🏪 Toplam Mağaza", toplam_magaza)
+                        with col3:
+                            st.metric("🔄 Yeni Sayım Yapan", len(degisen_magazalar))
+                        with col4:
+                            degismeyen = toplam_magaza - len(degisen_magazalar)
+                            st.metric("⏸️ Değişmeyen", degismeyen)
 
-                                if degisen_magazalar:
-                                    st.success(f"✅ {len(degisen_magazalar)} mağazada yeni sayım tespit edildi!")
+                        if degisen_magazalar:
+                            st.success(f"✅ {len(degisen_magazalar)} mağazada yeni sayım tespit edildi!")
 
-                                    # Değişen mağazaların listesi
-                                    with st.expander("🏪 Yeni Sayım Yapan Mağazalar"):
-                                        for mag in sorted(degisen_magazalar):
-                                            mag_df = df[df['Mağaza Kodu'] == mag]
-                                            if not mag_df.empty:
-                                                envanter_sayisi = mag_df['Envanter Sayisi'].iloc[0]
-                                                st.write(f"• {mag} - Envanter Sayısı: {envanter_sayisi}")
+                            # Değişen mağazaların listesi
+                            with st.expander("🏪 Yeni Sayım Yapan Mağazalar"):
+                                for mag in sorted(degisen_magazalar):
+                                    mag_df = df[df['Mağaza Kodu'] == mag]
+                                    if not mag_df.empty:
+                                        envanter_sayisi = mag_df['Envanter Sayisi'].iloc[0]
+                                        st.write(f"• {mag} - Envanter Sayısı: {envanter_sayisi}")
 
-                                    # Değişen mağazaların verilerini filtrele
-                                    degisen_df = df[df['Mağaza Kodu'].isin(degisen_magazalar)]
-                                    st.session_state['degisen_df'] = degisen_df
-                                    st.session_state['tam_df'] = df
+                            # Değişen mağazaların verilerini filtrele
+                            degisen_df = df[df['Mağaza Kodu'].isin(degisen_magazalar)]
+                            st.session_state['degisen_df'] = degisen_df
+                            st.session_state['tam_df'] = df
 
-                                    # Değişen mağaza analizi
-                                    st.markdown("---")
-                                    st.markdown("### 📈 Değişen Mağazalar Özet")
+                            # Değişen mağaza analizi
+                            st.markdown("---")
+                            st.markdown("### 📈 Değişen Mağazalar Özet")
 
-                                    if 'Fark Tutarı' in degisen_df.columns:
-                                        toplam_fark = degisen_df['Fark Tutarı'].sum()
-                                        st.metric("💰 Toplam Fark Tutarı", f"₺{toplam_fark:,.2f}")
+                            if 'Fark Tutarı' in degisen_df.columns:
+                                toplam_fark = degisen_df['Fark Tutarı'].sum()
+                                st.metric("💰 Toplam Fark Tutarı", f"₺{toplam_fark:,.2f}")
 
-                                    if 'Fire Tutarı' in degisen_df.columns:
-                                        toplam_fire = degisen_df['Fire Tutarı'].sum()
-                                        st.metric("🔥 Toplam Fire Tutarı", f"₺{toplam_fire:,.2f}")
+                            if 'Fire Tutarı' in degisen_df.columns:
+                                toplam_fire = degisen_df['Fire Tutarı'].sum()
+                                st.metric("🔥 Toplam Fire Tutarı", f"₺{toplam_fire:,.2f}")
 
-                                else:
-                                    st.info("ℹ️ Yeni sayım yapan mağaza bulunamadı. Tüm veriler zaten güncel.")
-                                    st.session_state['degisen_df'] = None
-                                    st.session_state['tam_df'] = df
+                        else:
+                            st.info("ℹ️ Yeni sayım yapan mağaza bulunamadı. Tüm veriler zaten güncel.")
+                            st.session_state['degisen_df'] = None
+                            st.session_state['tam_df'] = df
 
-                                # Otomatik kaydet
-                                st.markdown("---")
-                                st.markdown("### 💾 Otomatik Kayıt")
-                                with st.spinner("Veritabanına kaydediliyor..."):
-                                    basarili, _, mesaj = save_to_supabase(df)
-                                    if mesaj == "OK" and basarili > 0:
-                                        st.success(f"✅ {basarili} kayıt otomatik olarak kaydedildi!")
-                                    elif mesaj != "OK":
-                                        st.error(f"❌ Kayıt hatası: {mesaj}")
-                            else:
-                                st.warning("⚠️ Supabase bağlantısı yok. Veriler kaydedilemedi.")
-                                st.session_state['degisen_df'] = df
-                                st.session_state['tam_df'] = df
+                        # Otomatik kaydet
+                        st.markdown("---")
+                        basarili, _, mesaj = save_to_supabase(df)
+                        if mesaj == "OK" and basarili > 0:
+                            st.success(f"💾 {basarili} kayıt veritabanına kaydedildi!")
+                        elif mesaj != "OK":
+                            st.error(f"❌ Kayıt hatası: {mesaj}")
+                    else:
+                        st.warning("⚠️ Supabase bağlantısı yok.")
+                        st.session_state['degisen_df'] = df
+                        st.session_state['tam_df'] = df
 
             except Exception as e:
                 st.error(f"Dosya okunamadı: {e}")
