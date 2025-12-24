@@ -387,7 +387,7 @@ def get_gm_ozet_data(donemler):
             offset = 0
             while True:
                 result = supabase.table(TABLE_NAME).select(
-                    'magaza_kodu,magaza_tanim,satis_muduru,fark_tutari,fire_tutari,satis_hasilati'
+                    'magaza_kodu,magaza_tanim,satis_muduru,depolama_kosulu_grubu,fark_tutari,fire_tutari,satis_hasilati'
                 ).eq(
                     'envanter_donemi', donem
                 ).limit(batch_size).offset(offset).execute()
@@ -595,6 +595,45 @@ def main_app():
                 col2.metric("📉 Fark", f"₺{toplam_fark:,.0f}", f"%{fark_oran:.2f}")
                 col3.metric("🔥 Fire", f"₺{toplam_fire:,.0f}", f"%{fire_oran:.2f}")
                 col4.metric("📊 Toplam Açık", f"₺{toplam_acik:,.0f}", f"%{acik_oran:.2f}")
+
+                # Kategori bazlı kırılım
+                if 'depolama_kosulu_grubu' in gm_df.columns:
+                    st.markdown("---")
+                    st.markdown("### 📦 Kategori Bazlı Kırılım")
+
+                    kat_ozet = gm_df.groupby('depolama_kosulu_grubu').agg({
+                        'fark_tutari': 'sum',
+                        'fire_tutari': 'sum',
+                        'satis_hasilati': 'sum'
+                    }).reset_index()
+                    kat_ozet['acik'] = kat_ozet['fark_tutari'] + kat_ozet['fire_tutari']
+
+                    # Başlık
+                    h1, h2, h3, h4, h5 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
+                    h1.markdown("**Kategori**")
+                    h2.markdown("**Satış**")
+                    h3.markdown("**Fark**")
+                    h4.markdown("**Fire**")
+                    h5.markdown("**Toplam Açık**")
+
+                    for _, row in kat_ozet.iterrows():
+                        kat = row['depolama_kosulu_grubu'] or 'Diğer'
+                        satis = row['satis_hasilati']
+                        fark = row['fark_tutari']
+                        fire = row['fire_tutari']
+                        acik = row['acik']
+
+                        fark_pct = (fark / satis * 100) if satis != 0 else 0
+                        fire_pct = (fire / satis * 100) if satis != 0 else 0
+                        acik_pct = (acik / satis * 100) if satis != 0 else 0
+
+                        c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
+                        c1.write(f"**{kat}**")
+                        c2.write(f"₺{satis:,.0f}")
+                        c3.write(f"₺{fark:,.0f} ({fark_pct:.2f}%)")
+                        c4.write(f"₺{fire:,.0f} ({fire_pct:.2f}%)")
+                        c5.write(f"₺{acik:,.0f} ({acik_pct:.2f}%)")
+
             else:
                 st.warning("Seçili dönem için veri bulunamadı.")
                 gm_df = None
