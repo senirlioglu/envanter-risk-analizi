@@ -255,6 +255,15 @@ def save_to_supabase(df):
                         val = float(val) if not np.isnan(val) else None
                     elif isinstance(val, str):
                         val = val.strip()
+                        # Sayısal sütunlarda virgülü noktaya çevir
+                        if db_col in ['fark_miktari', 'fark_tutari', 'fire_miktari', 'fire_tutari',
+                                      'satis_miktari', 'satis_hasilati', 'sayim_miktari', 'sayim_tutari',
+                                      'kaydi_miktar', 'kaydi_tutar', 'satis_fiyati',
+                                      'iptal_satir_miktari', 'iptal_satir_tutari']:
+                            try:
+                                val = float(val.replace(',', '.'))
+                            except:
+                                val = None
                     record[db_col] = val
             records.append(record)
 
