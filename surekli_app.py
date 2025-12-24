@@ -740,7 +740,9 @@ def main_app():
                 st.error(traceback.format_exc())
 
 # ==================== UYGULAMA BAŞLAT ====================
-if not st.session_state.logged_in:
-    login()
-else:
-    main_app()
+# Geçici: Giriş ekranı devre dışı - doğrudan uygulamaya gir
+st.session_state.logged_in = True
+st.session_state.username = "test"
+st.session_state.user_role = "gm"
+st.session_state.user_sm = None
+main_app()
