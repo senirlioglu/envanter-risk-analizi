@@ -620,33 +620,41 @@ def main_app():
         - Et-Tavuk, Ekmek veya Meyve/Sebze kategorileri
 
         **İşlem akışı:**
-        1. Excel yükle → 2. Değişim tespit → 3. Analiz → 4. Kaydet
+        Dosya yükle → Değişim tespit → Analiz → Kaydet
         """)
 
         uploaded_file = st.file_uploader(
-            "Excel dosyasını seçin",
-            type=['xlsx', 'xls'],
-            help="Sürekli envanter verisi içeren Excel dosyası"
+            "Dosya seçin (CSV veya Excel)",
+            type=['csv', 'xlsx', 'xls'],
+            help="Sürekli envanter verisi içeren CSV veya Excel dosyası"
         )
 
         if uploaded_file:
             try:
-                # Excel oku
-                xl = pd.ExcelFile(uploaded_file)
-                sheet_names = xl.sheet_names
+                # Dosya tipine göre oku
+                file_name = uploaded_file.name.lower()
 
-                # En çok sütunu olan sayfayı bul
-                best_sheet = None
-                max_cols = 0
+                if file_name.endswith('.csv'):
+                    # CSV oku
+                    df = pd.read_csv(uploaded_file)
+                    st.success(f"✅ {len(df)} satır, {len(df.columns)} sütun yüklendi (CSV)")
+                else:
+                    # Excel oku
+                    xl = pd.ExcelFile(uploaded_file)
+                    sheet_names = xl.sheet_names
 
-                for sheet in sheet_names:
-                    temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
-                    if len(temp_df.columns) > max_cols:
-                        max_cols = len(temp_df.columns)
-                        best_sheet = sheet
+                    # En çok sütunu olan sayfayı bul
+                    best_sheet = None
+                    max_cols = 0
 
-                df = pd.read_excel(uploaded_file, sheet_name=best_sheet)
-                st.success(f"✅ {len(df)} satır, {len(df.columns)} sütun yüklendi ({best_sheet})")
+                    for sheet in sheet_names:
+                        temp_df = pd.read_excel(uploaded_file, sheet_name=sheet, nrows=5)
+                        if len(temp_df.columns) > max_cols:
+                            max_cols = len(temp_df.columns)
+                            best_sheet = sheet
+
+                    df = pd.read_excel(uploaded_file, sheet_name=best_sheet)
+                    st.success(f"✅ {len(df)} satır, {len(df.columns)} sütun yüklendi ({best_sheet})")
 
                 # Sütunları göster
                 with st.expander("📋 Sütunlar"):
