@@ -667,10 +667,14 @@ def main_app():
                         with st.spinner("Veritabanı kontrol ediliyor..."):
                             # Mevcut envanter sayılarını al
                             if supabase:
-                                mevcut_sayilar = get_mevcut_envanter_sayilari()
+                                # Excel'den mağaza kodları ve dönem al
+                                magaza_kodlari = df['Mağaza Kodu'].astype(str).unique().tolist()
+                                envanter_donemi = df['Envanter Dönemi'].iloc[0] if 'Envanter Dönemi' in df.columns else None
+
+                                mevcut_sayilar = get_mevcut_envanter_sayilari(magaza_kodlari, envanter_donemi)
 
                                 # Değişim tespit et
-                                degisen_magazalar = detect_envanter_degisimi(df, mevcut_sayilar)
+                                degisen_magazalar, degisen_urunler = detect_envanter_degisimi(df, mevcut_sayilar)
 
                                 st.markdown("---")
                                 st.markdown("### 📊 Değişim Analizi")
@@ -745,12 +749,12 @@ def main_app():
                                 else:
                                     kayit_df = df
 
-                                basarili, hata = save_to_supabase(kayit_df)
+                                basarili, _, mesaj = save_to_supabase(kayit_df)
 
-                                if basarili > 0:
+                                if mesaj == "OK" and basarili > 0:
                                     st.success(f"✅ {basarili} kayıt başarıyla kaydedildi!")
-                                if hata > 0:
-                                    st.warning(f"⚠️ {hata} kayıtta hata oluştu.")
+                                elif mesaj != "OK":
+                                    st.error(f"❌ Kayıt hatası: {mesaj}")
 
             except Exception as e:
                 st.error(f"Dosya okunamadı: {e}")
