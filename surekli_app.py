@@ -629,12 +629,27 @@ def main_app():
                     sm_ozet['Toplam Açık'] = sm_ozet['Fark'] + sm_ozet['Fire']
                     sm_ozet = sm_ozet.sort_values('Toplam Açık', ascending=True)
 
+                    # Başlık satırı
+                    header = st.columns([2, 1.5, 1.5, 1.5, 1.5])
+                    header[0].markdown("**Satış Müdürü**")
+                    header[1].markdown("**Fark**")
+                    header[2].markdown("**Fire**")
+                    header[3].markdown("**Toplam Açık**")
+                    header[4].markdown("**Satış**")
+                    st.markdown("---")
+
                     for _, row in sm_ozet.iterrows():
-                        cols = st.columns([2, 1, 1, 1, 1])
-                        cols[0].write(f"**{row['Satış Müdürü']}** ({row['Mağaza']} mağaza)")
-                        cols[1].write(f"₺{row['Fark']:,.0f}")
-                        cols[2].write(f"₺{row['Fire']:,.0f}")
-                        cols[3].write(f"₺{row['Toplam Açık']:,.0f}")
+                        # Oranları hesapla
+                        satis = row['Satış'] if row['Satış'] != 0 else 1
+                        fark_oran = row['Fark'] / satis * 100
+                        fire_oran = row['Fire'] / satis * 100
+                        acik_oran = row['Toplam Açık'] / satis * 100
+
+                        cols = st.columns([2, 1.5, 1.5, 1.5, 1.5])
+                        cols[0].write(f"**{row['Satış Müdürü']}** ({row['Mağaza']} mğz)")
+                        cols[1].write(f"₺{row['Fark']:,.0f} | %{fark_oran:.2f}")
+                        cols[2].write(f"₺{row['Fire']:,.0f} | %{fire_oran:.2f}")
+                        cols[3].write(f"₺{row['Toplam Açık']:,.0f} | %{acik_oran:.2f}")
                         cols[4].write(f"₺{row['Satış']:,.0f}")
                         st.markdown("---")
                 else:
