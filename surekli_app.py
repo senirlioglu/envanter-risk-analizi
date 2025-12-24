@@ -569,6 +569,8 @@ def main_app():
             gm_df = get_gm_ozet_data(selected_periods)
 
             if gm_df is not None and len(gm_df) > 0:
+                st.caption(f"📊 {len(gm_df)} satır veri çekildi")
+
                 magaza_sayisi = gm_df['magaza_kodu'].nunique()
                 toplam_fark = gm_df['fark_tutari'].sum() if 'fark_tutari' in gm_df.columns else 0
                 toplam_fire = gm_df['fire_tutari'].sum() if 'fire_tutari' in gm_df.columns else 0
