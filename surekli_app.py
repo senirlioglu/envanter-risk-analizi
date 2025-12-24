@@ -379,11 +379,25 @@ def get_gm_ozet_data(donemler):
         return None
 
     try:
-        # Seçili dönemlerdeki tüm verileri çek
-        result = supabase.table(TABLE_NAME).select('*').in_('envanter_donemi', donemler).execute()
+        # Seçili dönemlerdeki tüm verileri çek (limit kaldırıldı)
+        all_data = []
+        for donem in donemler:
+            offset = 0
+            while True:
+                result = supabase.table(TABLE_NAME).select('*').eq(
+                    'envanter_donemi', donem
+                ).range(offset, offset + 9999).execute()
 
-        if result.data:
-            df = pd.DataFrame(result.data)
+                if result.data:
+                    all_data.extend(result.data)
+                    if len(result.data) < 10000:
+                        break
+                    offset += 10000
+                else:
+                    break
+
+        if all_data:
+            df = pd.DataFrame(all_data)
             return df
         return None
     except Exception as e:
