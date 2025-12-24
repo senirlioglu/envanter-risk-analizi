@@ -627,31 +627,45 @@ def main_app():
                     }).reset_index()
                     sm_ozet.columns = ['Satış Müdürü', 'Mağaza', 'Fark', 'Fire', 'Satış']
                     sm_ozet['Açık'] = sm_ozet['Fark'] + sm_ozet['Fire']
-
-                    # Oranları hesapla
-                    sm_ozet['Fark%'] = (sm_ozet['Fark'] / sm_ozet['Satış'] * 100).round(2)
-                    sm_ozet['Fire%'] = (sm_ozet['Fire'] / sm_ozet['Satış'] * 100).round(2)
                     sm_ozet['Açık%'] = (sm_ozet['Açık'] / sm_ozet['Satış'] * 100).round(2)
-
                     sm_ozet = sm_ozet.sort_values('Açık', ascending=True)
 
-                    # Mobil uyumlu tablo
-                    st.dataframe(
-                        sm_ozet[['Satış Müdürü', 'Mağaza', 'Satış', 'Fark', 'Fark%', 'Fire', 'Fire%', 'Açık', 'Açık%']],
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            'Satış Müdürü': st.column_config.TextColumn('SM', width='medium'),
-                            'Mağaza': st.column_config.NumberColumn('Mğz', format='%d', width='small'),
-                            'Satış': st.column_config.NumberColumn('Satış', format='%.0f'),
-                            'Fark': st.column_config.NumberColumn('Fark', format='%.0f'),
-                            'Fark%': st.column_config.NumberColumn('%', format='%.2f', width='small'),
-                            'Fire': st.column_config.NumberColumn('Fire', format='%.0f'),
-                            'Fire%': st.column_config.NumberColumn('%', format='%.2f', width='small'),
-                            'Açık': st.column_config.NumberColumn('Açık', format='%.0f'),
-                            'Açık%': st.column_config.NumberColumn('%', format='%.2f', width='small'),
-                        }
-                    )
+                    # Her SM için tıklanabilir expander
+                    for _, row in sm_ozet.iterrows():
+                        sm_name = row['Satış Müdürü']
+                        acik_pct = row['Açık%']
+
+                        with st.expander(f"👔 {sm_name} | {row['Mağaza']} mğz | Açık: ₺{row['Açık']:,.0f} ({acik_pct:.2f}%)"):
+                            # Özet metrikler
+                            c1, c2, c3, c4 = st.columns(4)
+                            c1.metric("Satış", f"₺{row['Satış']:,.0f}")
+                            c2.metric("Fark", f"₺{row['Fark']:,.0f}", f"{row['Fark']/row['Satış']*100:.2f}%")
+                            c3.metric("Fire", f"₺{row['Fire']:,.0f}", f"{row['Fire']/row['Satış']*100:.2f}%")
+                            c4.metric("Açık", f"₺{row['Açık']:,.0f}", f"{acik_pct:.2f}%")
+
+                            # Bu SM'in mağazaları
+                            st.markdown("**🏪 Mağazalar**")
+                            sm_magazalar = gm_df[gm_df['satis_muduru'] == sm_name].groupby(
+                                ['magaza_kodu', 'magaza_tanim']
+                            ).agg({
+                                'fark_tutari': 'sum',
+                                'fire_tutari': 'sum',
+                                'satis_hasilati': 'sum'
+                            }).reset_index()
+                            sm_magazalar['Açık'] = sm_magazalar['fark_tutari'] + sm_magazalar['fire_tutari']
+                            sm_magazalar = sm_magazalar.sort_values('Açık', ascending=True)
+
+                            st.dataframe(
+                                sm_magazalar.rename(columns={
+                                    'magaza_kodu': 'Kod',
+                                    'magaza_tanim': 'Mağaza',
+                                    'fark_tutari': 'Fark',
+                                    'fire_tutari': 'Fire',
+                                    'satis_hasilati': 'Satış'
+                                })[['Kod', 'Mağaza', 'Satış', 'Fark', 'Fire', 'Açık']],
+                                use_container_width=True,
+                                hide_index=True
+                            )
                 else:
                     st.info("📥 Veri bulunamadı")
 
