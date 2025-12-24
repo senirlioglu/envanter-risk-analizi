@@ -730,13 +730,24 @@ def main_app():
                             st.markdown("---")
                             st.markdown("### 📈 Değişen Mağazalar Özet")
 
-                            if 'Fark Tutarı' in degisen_df.columns:
-                                toplam_fark = pd.to_numeric(degisen_df['Fark Tutarı'], errors='coerce').sum()
-                                st.metric("💰 Toplam Fark Tutarı", f"₺{toplam_fark:,.2f}")
+                            toplam_fark = 0
+                            toplam_fire = 0
 
-                            if 'Fire Tutarı' in degisen_df.columns:
-                                toplam_fire = pd.to_numeric(degisen_df['Fire Tutarı'], errors='coerce').sum()
-                                st.metric("🔥 Toplam Fire Tutarı", f"₺{toplam_fire:,.2f}")
+                            col1, col2, col3 = st.columns(3)
+
+                            with col1:
+                                if 'Fark Tutarı' in degisen_df.columns:
+                                    toplam_fark = pd.to_numeric(degisen_df['Fark Tutarı'], errors='coerce').sum()
+                                st.metric("💰 Fark Tutarı", f"₺{toplam_fark:,.2f}")
+
+                            with col2:
+                                if 'Fire Tutarı' in degisen_df.columns:
+                                    toplam_fire = pd.to_numeric(degisen_df['Fire Tutarı'], errors='coerce').sum()
+                                st.metric("🔥 Fire Tutarı", f"₺{toplam_fire:,.2f}")
+
+                            with col3:
+                                toplam_acik = toplam_fark + toplam_fire
+                                st.metric("📊 Toplam Açık", f"₺{toplam_acik:,.2f}")
 
                         else:
                             st.info("ℹ️ Yeni sayım yapan mağaza bulunamadı. Tüm veriler zaten güncel.")
