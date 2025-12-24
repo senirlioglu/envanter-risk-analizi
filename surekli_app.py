@@ -379,20 +379,24 @@ def get_gm_ozet_data(donemler):
         return None
 
     try:
-        # Seçili dönemlerdeki tüm verileri çek (limit kaldırıldı)
+        # Seçili dönemlerdeki tüm verileri çek
         all_data = []
+        batch_size = 1000
+
         for donem in donemler:
             offset = 0
             while True:
-                result = supabase.table(TABLE_NAME).select('*').eq(
+                result = supabase.table(TABLE_NAME).select(
+                    'magaza_kodu,magaza_tanim,satis_muduru,fark_tutari,fire_tutari,satis_hasilati'
+                ).eq(
                     'envanter_donemi', donem
-                ).range(offset, offset + 9999).execute()
+                ).limit(batch_size).offset(offset).execute()
 
                 if result.data:
                     all_data.extend(result.data)
-                    if len(result.data) < 10000:
+                    if len(result.data) < batch_size:
                         break
-                    offset += 10000
+                    offset += batch_size
                 else:
                     break
 
