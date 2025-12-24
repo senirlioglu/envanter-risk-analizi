@@ -724,11 +724,11 @@ def main_app():
                             st.markdown("### 📈 Değişen Mağazalar Özet")
 
                             if 'Fark Tutarı' in degisen_df.columns:
-                                toplam_fark = degisen_df['Fark Tutarı'].sum()
+                                toplam_fark = pd.to_numeric(degisen_df['Fark Tutarı'], errors='coerce').sum()
                                 st.metric("💰 Toplam Fark Tutarı", f"₺{toplam_fark:,.2f}")
 
                             if 'Fire Tutarı' in degisen_df.columns:
-                                toplam_fire = degisen_df['Fire Tutarı'].sum()
+                                toplam_fire = pd.to_numeric(degisen_df['Fire Tutarı'], errors='coerce').sum()
                                 st.metric("🔥 Toplam Fire Tutarı", f"₺{toplam_fire:,.2f}")
 
                         else:
