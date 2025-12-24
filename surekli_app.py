@@ -112,15 +112,34 @@ if 'user_sm' not in st.session_state:
     st.session_state.user_sm = None
 
 # ==================== KULLANICI YETKİLERİ ====================
-USERS = {
-    "admin": {"password": "admin123", "role": "admin", "sm": None},
-    "sm1": {"password": "sm1", "role": "sm", "sm": "ALİ AKÇAY"},
-    "sm2": {"password": "sm2", "role": "sm", "sm": "ŞADAN YURDAKUL"},
-    "sm3": {"password": "sm3", "role": "sm", "sm": "VELİ GÖK"},
-    "sm4": {"password": "sm4", "role": "sm", "sm": "GİZEM TOSUN"},
-    "sma": {"password": "sma", "role": "asistan", "sm": None},
-    "ziya": {"password": "ziya123", "role": "gm", "sm": None},
+# Rol ve SM eşleştirmeleri
+USER_ROLES = {
+    "ziya": {"role": "gm", "sm": None},
+    "sm1": {"role": "sm", "sm": "ALİ AKÇAY"},
+    "sm2": {"role": "sm", "sm": "ŞADAN YURDAKUL"},
+    "sm3": {"role": "sm", "sm": "VELİ GÖK"},
+    "sm4": {"role": "sm", "sm": "GİZEM TOSUN"},
+    "sma": {"role": "asistan", "sm": None},
 }
+
+def get_users():
+    """Secrets'tan kullanıcı bilgilerini al"""
+    users = {}
+    try:
+        # Secrets'tan [users] bölümünü oku
+        if "users" in st.secrets:
+            for username, password in st.secrets["users"].items():
+                role_info = USER_ROLES.get(username, {"role": "user", "sm": None})
+                users[username] = {
+                    "password": password,
+                    "role": role_info["role"],
+                    "sm": role_info["sm"]
+                }
+    except Exception as e:
+        st.error(f"Kullanıcı bilgileri okunamadı: {e}")
+    return users
+
+USERS = get_users()
 
 # ==================== GİRİŞ SİSTEMİ ====================
 def login():
