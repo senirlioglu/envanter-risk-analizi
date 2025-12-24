@@ -373,6 +373,23 @@ def get_available_sms():
     except:
         return ["ALİ AKÇAY", "ŞADAN YURDAKUL", "VELİ GÖK", "GİZEM TOSUN"]
 
+def get_gm_ozet_data(donemler):
+    """GM Özet için verileri getir"""
+    if supabase is None or not donemler:
+        return None
+
+    try:
+        # Seçili dönemlerdeki tüm verileri çek
+        result = supabase.table(TABLE_NAME).select('*').in_('envanter_donemi', donemler).execute()
+
+        if result.data:
+            df = pd.DataFrame(result.data)
+            return df
+        return None
+    except Exception as e:
+        st.error(f"Veri çekme hatası: {e}")
+        return None
+
 def get_onceki_envanter(magaza_kodu, malzeme_kodu, envanter_donemi, envanter_sayisi):
     """Bir önceki envanter sayısındaki kaydı getir"""
     if supabase is None or envanter_sayisi <= 1:
@@ -534,16 +551,32 @@ def main_app():
             st.warning("Henüz veri yüklenmemiş. SM'ler Excel yükledikçe veriler burada görünecek.")
 
         if selected_periods:
-            st.markdown("---")
-            st.subheader("📊 Bölge Özeti - 0 Mağaza")
+            # Veriyi çek
+            gm_df = get_gm_ozet_data(selected_periods)
 
-            # Üst metrikler
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("💰 Satış", "0 TL")
-            col2.metric("📉 Fark", "%0.00", "0 | Gün: 0")
-            col3.metric("🔥 Fire", "%0.00", "0 | Gün: 0")
-            col4.metric("📊 Toplam", "%0.00", "0")
-            col5.metric("💰 10 TL", "0", "TAMAM")
+            if gm_df is not None and len(gm_df) > 0:
+                magaza_sayisi = gm_df['magaza_kodu'].nunique()
+                toplam_fark = gm_df['fark_tutari'].sum() if 'fark_tutari' in gm_df.columns else 0
+                toplam_fire = gm_df['fire_tutari'].sum() if 'fire_tutari' in gm_df.columns else 0
+                toplam_satis = gm_df['satis_hasilati'].sum() if 'satis_hasilati' in gm_df.columns else 0
+                toplam_acik = toplam_fark + toplam_fire
+
+                st.markdown("---")
+                st.subheader(f"📊 Bölge Özeti - {magaza_sayisi} Mağaza")
+
+                # Üst metrikler
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("💰 Satış", f"₺{toplam_satis:,.0f}")
+                col2.metric("📉 Fark", f"₺{toplam_fark:,.0f}")
+                col3.metric("🔥 Fire", f"₺{toplam_fire:,.0f}")
+                col4.metric("📊 Toplam Açık", f"₺{toplam_acik:,.0f}")
+            else:
+                st.warning("Seçili dönem için veri bulunamadı.")
+                gm_df = None
+                magaza_sayisi = 0
+                toplam_fark = 0
+                toplam_fire = 0
+                toplam_acik = 0
 
             # Risk dağılımı
             st.markdown("### 📊 Risk Dağılımı")
@@ -554,68 +587,78 @@ def main_app():
             r4.markdown('<div class="risk-temiz">🟢 TEMİZ: 0</div>', unsafe_allow_html=True)
 
             # Sekmeler
-            tabs = st.tabs(["👔 SM Özet", "📋 BS Özet", "🏪 Mağazalar", "📊 Top 10", "🔍 Mağaza Detay", "📥 İndir"])
+            tabs = st.tabs(["👔 SM Özet", "🏪 Mağazalar", "📊 Top 10 Açık"])
 
             with tabs[0]:
                 st.subheader("👔 Satış Müdürü Bazlı Özet")
 
-                # Başlık satırı
-                cols = st.columns([2, 1.5, 1.5, 1, 1, 1, 1])
-                cols[0].markdown("**Satış Müdürü**")
-                cols[1].markdown("**Satış | Fark**")
-                cols[2].markdown("**Fire**")
-                cols[3].markdown("**Kayıp %**")
-                cols[4].markdown("**🚬 🔒**")
-                cols[5].markdown("**Risk**")
-                cols[6].markdown("**Seviye**")
-                st.markdown("---")
+                if gm_df is not None and len(gm_df) > 0 and 'satis_muduru' in gm_df.columns:
+                    # SM bazlı grupla
+                    sm_ozet = gm_df.groupby('satis_muduru').agg({
+                        'magaza_kodu': 'nunique',
+                        'fark_tutari': 'sum',
+                        'fire_tutari': 'sum',
+                        'satis_hasilati': 'sum'
+                    }).reset_index()
+                    sm_ozet.columns = ['Satış Müdürü', 'Mağaza', 'Fark', 'Fire', 'Satış']
+                    sm_ozet['Toplam Açık'] = sm_ozet['Fark'] + sm_ozet['Fire']
+                    sm_ozet = sm_ozet.sort_values('Toplam Açık', ascending=True)
 
-                st.info("📥 Veri yüklendikten sonra SM özeti görüntülenecek")
+                    for _, row in sm_ozet.iterrows():
+                        cols = st.columns([2, 1, 1, 1, 1])
+                        cols[0].write(f"**{row['Satış Müdürü']}** ({row['Mağaza']} mağaza)")
+                        cols[1].write(f"₺{row['Fark']:,.0f}")
+                        cols[2].write(f"₺{row['Fire']:,.0f}")
+                        cols[3].write(f"₺{row['Toplam Açık']:,.0f}")
+                        cols[4].write(f"₺{row['Satış']:,.0f}")
+                        st.markdown("---")
+                else:
+                    st.info("📥 Veri bulunamadı")
 
             with tabs[1]:
-                st.subheader("📋 Bölge Sorumlusu Bazlı Özet")
-                st.info("📥 Veri yüklendikten sonra BS özeti görüntülenecek")
+                st.subheader("🏪 Mağaza Bazlı Özet")
+
+                if gm_df is not None and len(gm_df) > 0:
+                    # Mağaza bazlı grupla
+                    mag_ozet = gm_df.groupby(['magaza_kodu', 'magaza_tanim']).agg({
+                        'fark_tutari': 'sum',
+                        'fire_tutari': 'sum',
+                        'satis_hasilati': 'sum'
+                    }).reset_index()
+                    mag_ozet['Toplam Açık'] = mag_ozet['fark_tutari'] + mag_ozet['fire_tutari']
+                    mag_ozet = mag_ozet.sort_values('Toplam Açık', ascending=True)
+
+                    st.dataframe(
+                        mag_ozet.rename(columns={
+                            'magaza_kodu': 'Mağaza Kodu',
+                            'magaza_tanim': 'Mağaza',
+                            'fark_tutari': 'Fark',
+                            'fire_tutari': 'Fire',
+                            'satis_hasilati': 'Satış',
+                            'Toplam Açık': 'Toplam Açık'
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("📥 Veri bulunamadı")
 
             with tabs[2]:
-                st.subheader("🏪 Tüm Mağazalar")
+                st.subheader("📊 En Yüksek Açık - Top 10 Mağaza")
 
-                # Filtreler
-                col_f1, col_f2, col_f3 = st.columns(3)
-                with col_f1:
-                    risk_filter = st.multiselect("Risk Seviyesi", ["🔴 KRİTİK", "🟠 RİSKLİ", "🟡 DİKKAT", "🟢 TEMİZ"])
-                with col_f2:
-                    sm_filter = st.multiselect("Satış Müdürü", get_available_sms())
-                with col_f3:
-                    bs_filter = st.multiselect("Bölge Sorumlusu", [])
+                if gm_df is not None and len(gm_df) > 0:
+                    # Mağaza bazlı grupla ve top 10
+                    mag_top = gm_df.groupby(['magaza_kodu', 'magaza_tanim']).agg({
+                        'fark_tutari': 'sum',
+                        'fire_tutari': 'sum'
+                    }).reset_index()
+                    mag_top['Toplam Açık'] = mag_top['fark_tutari'] + mag_top['fire_tutari']
+                    mag_top = mag_top.nsmallest(10, 'Toplam Açık')  # En düşük (en negatif) 10
 
-                st.info("📊 0 mağaza gösteriliyor")
-
-            with tabs[3]:
-                st.subheader("📊 En Riskli 10 Mağaza")
-                st.info("📥 Veri yüklendikten sonra en riskli mağazalar görüntülenecek")
-
-            with tabs[4]:
-                st.subheader("🔍 Mağaza Detay Görünümü")
-                st.info("Bir mağaza seçerek detayları görüntüleyebilirsiniz.")
-
-                mag_options_gm = ["Mağaza seçin..."]
-                selected_mag_gm = st.selectbox("📍 Mağaza Seçin", mag_options_gm, key="gm_mag_select")
-
-                if st.button("🔍 Detayları Getir", key="gm_details"):
-                    st.warning("Önce veri yükleyin")
-
-            with tabs[5]:
-                st.subheader("📥 Raporları İndir")
-
-                st.button("📥 GM Bölge Dashboard (Excel)", disabled=True)
-
-                st.markdown("---")
-                st.markdown("**📥 Mağaza Detay Raporu İndir**")
-
-                mag_options_gm_dl = ["Mağaza seçin..."]
-                selected_mag_gm_dl = st.selectbox("Mağaza seçin", mag_options_gm_dl, key="gm_mag_dl")
-
-                st.button("📥 Mağaza Raporu Oluştur", disabled=True)
+                    for i, row in mag_top.iterrows():
+                        st.write(f"**{row['magaza_kodu']}** - {row['magaza_tanim']}: ₺{row['Toplam Açık']:,.0f}")
+                else:
+                    st.info("📥 Veri bulunamadı")
 
     # ==================== EXCEL YÜKLE MODU ====================
     elif analysis_mode == "📥 Excel Yükle":
