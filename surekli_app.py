@@ -702,12 +702,64 @@ def main_app():
                     sm_ozet['Açık%'] = (sm_ozet['Açık'] / sm_ozet['Satış'] * 100).round(2)
                     sm_ozet = sm_ozet.sort_values('Açık', ascending=True)
 
+                    # SM + Kategori bazlı açık oranları hesapla
+                    sm_kat_oranlar = {}
+                    if 'depolama_kosulu' in gm_df.columns:
+                        sm_kat_df = gm_df.groupby(['satis_muduru', 'depolama_kosulu']).agg({
+                            'fark_tutari': 'sum', 'fire_tutari': 'sum', 'satis_hasilati': 'sum'
+                        }).reset_index()
+
+                        for _, r in sm_kat_df.iterrows():
+                            sm = r['satis_muduru']
+                            k = str(r['depolama_kosulu'] or '').upper()
+                            s = r['satis_hasilati']
+                            acik = r['fark_tutari'] + r['fire_tutari']
+                            oran = (acik / s * 100) if s else 0
+
+                            if 'ET' in k or 'TAVUK' in k: e = '🐓'
+                            elif 'MEYVE' in k or 'SEBZE' in k: e = '🥦'
+                            elif 'EKMEK' in k: e = '🥖'
+                            else: continue
+
+                            if sm not in sm_kat_oranlar:
+                                sm_kat_oranlar[sm] = {}
+                            sm_kat_oranlar[sm][e] = oran
+
+                    # Her kategori için en iyi/kötü bul
+                    kat_worst = {}
+                    kat_best = {}
+                    for e in ['🐓', '🥦', '🥖']:
+                        vals = [(sm, sm_kat_oranlar[sm].get(e, 0)) for sm in sm_kat_oranlar if e in sm_kat_oranlar[sm]]
+                        if vals:
+                            kat_worst[e] = min(vals, key=lambda x: x[1])[0]  # En negatif = en kötü
+                            kat_best[e] = max(vals, key=lambda x: x[1])[0]   # En az negatif = en iyi
+
                     # Her SM için tıklanabilir expander
                     for _, row in sm_ozet.iterrows():
                         sm_name = row['Satış Müdürü']
                         acik_pct = row['Açık%']
 
-                        with st.expander(f"👔 {sm_name} | {row['Mağaza']} mğz | Açık: ₺{row['Açık']:,.0f} ({acik_pct:.2f}%)"):
+                        # Kategori oranlarını renkli göster
+                        kat_str = ""
+                        if sm_name in sm_kat_oranlar:
+                            parts = []
+                            for e in ['🐓', '🥦', '🥖']:
+                                if e in sm_kat_oranlar[sm_name]:
+                                    oran = sm_kat_oranlar[sm_name][e]
+                                    if kat_worst.get(e) == sm_name:
+                                        parts.append(f"<span style='color:red'>{e}{oran:.1f}</span>")
+                                    elif kat_best.get(e) == sm_name:
+                                        parts.append(f"<span style='color:green'>{e}{oran:.1f}</span>")
+                                    else:
+                                        parts.append(f"{e}{oran:.1f}")
+                            kat_str = " ".join(parts)
+
+                        # Expander başlığı
+                        header = f"👔 {sm_name} | {row['Mağaza']} mğz | Açık: ₺{row['Açık']:,.0f} ({acik_pct:.2f}%)"
+                        if kat_str:
+                            st.markdown(f"<div style='padding:8px;border:1px solid #ddd;border-radius:5px;margin-bottom:5px'>{header} | {kat_str}</div>", unsafe_allow_html=True)
+
+                        with st.expander(f"📊 {sm_name} detay"):
                             # Bu SM'in verilerini al
                             sm_df = gm_df[gm_df['satis_muduru'] == sm_name]
 
