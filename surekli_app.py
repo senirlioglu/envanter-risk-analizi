@@ -739,27 +739,32 @@ def main_app():
                         sm_name = row['Satış Müdürü']
                         acik_pct = row['Açık%']
 
-                        # Kategori oranlarını renkli göster
-                        kat_str = ""
+                        # Kategori oranlarını göster (renkler expander içinde)
+                        kat_parts = []
                         if sm_name in sm_kat_oranlar:
-                            parts = []
                             for e in ['🐓', '🥦', '🥖']:
                                 if e in sm_kat_oranlar[sm_name]:
                                     oran = sm_kat_oranlar[sm_name][e]
-                                    if kat_worst.get(e) == sm_name:
-                                        parts.append(f"<span style='color:red'>{e}{oran:.1f}</span>")
-                                    elif kat_best.get(e) == sm_name:
-                                        parts.append(f"<span style='color:green'>{e}{oran:.1f}</span>")
-                                    else:
-                                        parts.append(f"{e}{oran:.1f}")
-                            kat_str = " ".join(parts)
+                                    kat_parts.append(f"{e}{oran:.1f}")
 
-                        # Expander başlığı
-                        header = f"👔 {sm_name} | {row['Mağaza']} mğz | Açık: ₺{row['Açık']:,.0f} ({acik_pct:.2f}%)"
-                        if kat_str:
-                            st.markdown(f"<div style='padding:8px;border:1px solid #ddd;border-radius:5px;margin-bottom:5px'>{header} | {kat_str}</div>", unsafe_allow_html=True)
+                        kat_str = " ".join(kat_parts) if kat_parts else ""
+                        expander_title = f"👔 {sm_name} | {row['Mağaza']} mğz | {kat_str} | Açık: {acik_pct:.1f}%"
 
-                        with st.expander(f"📊 {sm_name} detay"):
+                        with st.expander(expander_title):
+                            # Renk bilgisi göster
+                            if sm_name in sm_kat_oranlar:
+                                color_parts = []
+                                for e in ['🐓', '🥦', '🥖']:
+                                    if e in sm_kat_oranlar[sm_name]:
+                                        oran = sm_kat_oranlar[sm_name][e]
+                                        if kat_worst.get(e) == sm_name:
+                                            color_parts.append(f"<span style='color:red;font-weight:bold'>{e} {oran:.1f}% (en kötü)</span>")
+                                        elif kat_best.get(e) == sm_name:
+                                            color_parts.append(f"<span style='color:green;font-weight:bold'>{e} {oran:.1f}% (en iyi)</span>")
+                                        else:
+                                            color_parts.append(f"{e} {oran:.1f}%")
+                                st.markdown(" | ".join(color_parts), unsafe_allow_html=True)
+                                st.markdown("---")
                             # Bu SM'in verilerini al
                             sm_df = gm_df[gm_df['satis_muduru'] == sm_name]
 
