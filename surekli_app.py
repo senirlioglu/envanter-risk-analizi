@@ -643,13 +643,13 @@ def main_app():
 
                 if file_name.endswith('.csv'):
                     # CSV oku - önce noktalı virgül, sonra virgül, sonra tab dene
-                    df = pd.read_csv(uploaded_file, sep=';')
+                    df = pd.read_csv(uploaded_file, sep=';', decimal=',')
                     if len(df.columns) <= 1:
                         uploaded_file.seek(0)
-                        df = pd.read_csv(uploaded_file, sep=',')
+                        df = pd.read_csv(uploaded_file, sep=',', decimal='.')
                     if len(df.columns) <= 1:
                         uploaded_file.seek(0)
-                        df = pd.read_csv(uploaded_file, sep='\t')
+                        df = pd.read_csv(uploaded_file, sep='\t', decimal=',')
                     st.success(f"✅ {len(df)} satır, {len(df.columns)} sütun yüklendi (CSV)")
                 else:
                     # Excel oku
