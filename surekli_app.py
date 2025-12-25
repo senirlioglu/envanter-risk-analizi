@@ -374,34 +374,52 @@ def get_available_sms():
         return ["ALİ AKÇAY", "ŞADAN YURDAKUL", "VELİ GÖK", "GİZEM TOSUN"]
 
 def get_gm_ozet_data(donemler):
-    """GM Özet için verileri getir"""
+    """GM Özet için verileri getir - retry mekanizmalı"""
     if supabase is None or not donemler:
         return None
+
+    import time
+    max_retries = 3
 
     try:
         # Seçili dönemlerdeki tüm verileri çek
         all_data = []
-        batch_size = 1000
+        batch_size = 500  # Daha küçük batch ile daha stabil
 
         for donem in donemler:
             offset = 0
+            retry_count = 0
             while True:
-                result = supabase.table(TABLE_NAME).select(
-                    'magaza_kodu,magaza_tanim,satis_muduru,bolge_sorumlusu,depolama_kosulu,fark_tutari,fire_tutari,satis_hasilati'
-                ).eq(
-                    'envanter_donemi', donem
-                ).limit(batch_size).offset(offset).execute()
+                try:
+                    result = supabase.table(TABLE_NAME).select(
+                        'magaza_kodu,magaza_tanim,satis_muduru,bolge_sorumlusu,depolama_kosulu,fark_tutari,fire_tutari,satis_hasilati'
+                    ).eq(
+                        'envanter_donemi', donem
+                    ).limit(batch_size).offset(offset).execute()
 
-                if result.data:
-                    all_data.extend(result.data)
-                    if len(result.data) < batch_size:
+                    if result.data:
+                        all_data.extend(result.data)
+                        if len(result.data) < batch_size:
+                            break
+                        offset += batch_size
+                        retry_count = 0  # Başarılı, retry sayısını sıfırla
+                    else:
                         break
-                    offset += batch_size
-                else:
-                    break
+                except Exception as batch_err:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        st.warning(f"⚠️ Dönem {donem} için veri çekilemedi: {str(batch_err)[:50]}")
+                        break
+                    time.sleep(1)  # 1 saniye bekle ve tekrar dene
+                    continue
 
         if all_data:
             df = pd.DataFrame(all_data)
+            # bolge_sorumlusu yoksa veya hepsi null ise boş string ekle
+            if 'bolge_sorumlusu' not in df.columns:
+                df['bolge_sorumlusu'] = ''
+            else:
+                df['bolge_sorumlusu'] = df['bolge_sorumlusu'].fillna('')
             return df
         return None
     except Exception as e:
@@ -830,9 +848,17 @@ def main_app():
             with tabs[1]:
                 st.subheader("📋 Bölge Sorumlusu Bazlı Özet")
 
+                # BS verisi kontrolü - boş olmayan BS'leri filtrele
+                bs_var = False
                 if gm_df is not None and len(gm_df) > 0 and 'bolge_sorumlusu' in gm_df.columns:
-                    # BS bazlı grupla
-                    bs_ozet = gm_df.groupby('bolge_sorumlusu').agg({
+                    # Boş olmayan BS'ler
+                    bs_df = gm_df[gm_df['bolge_sorumlusu'].notna() & (gm_df['bolge_sorumlusu'] != '')]
+                    if len(bs_df) > 0:
+                        bs_var = True
+
+                if bs_var:
+                    # BS bazlı grupla - sadece dolu olanları
+                    bs_ozet = bs_df.groupby('bolge_sorumlusu').agg({
                         'magaza_kodu': 'nunique',
                         'fark_tutari': 'sum',
                         'fire_tutari': 'sum',
@@ -845,8 +871,8 @@ def main_app():
 
                     # BS + Kategori bazlı açık oranları hesapla
                     bs_kat_oranlar = {}
-                    if 'depolama_kosulu' in gm_df.columns:
-                        bs_kat_df = gm_df.groupby(['bolge_sorumlusu', 'depolama_kosulu']).agg({
+                    if 'depolama_kosulu' in bs_df.columns:
+                        bs_kat_df = bs_df.groupby(['bolge_sorumlusu', 'depolama_kosulu']).agg({
                             'fark_tutari': 'sum', 'fire_tutari': 'sum', 'satis_hasilati': 'sum'
                         }).reset_index()
 
@@ -900,7 +926,7 @@ def main_app():
 
                         with st.expander(expander_title):
                             # Bu BS'in mağazaları
-                            bs_magazalar = gm_df[gm_df['bolge_sorumlusu'] == bs_name].groupby(
+                            bs_magazalar = bs_df[bs_df['bolge_sorumlusu'] == bs_name].groupby(
                                 ['magaza_kodu', 'magaza_tanim']
                             ).agg({
                                 'fark_tutari': 'sum',
@@ -919,7 +945,14 @@ def main_app():
                                 acik_emoji = "🔴" if mag['Açık%'] < -5 else "🟡" if mag['Açık%'] < -2 else "🟢"
                                 st.write(f"{acik_emoji} **{mag['magaza_kodu']}** {mag['magaza_tanim']} | Açık: ₺{mag['Açık']:,.0f} ({mag['Açık%']:.1f}%)")
                 else:
-                    st.info("📥 Veri bulunamadı veya Bölge Sorumlusu bilgisi yok")
+                    st.warning("⚠️ Bölge Sorumlusu verisi bulunamadı")
+                    st.markdown("""
+                    **Olası sebepler:**
+                    - Excel dosyasında "Bölge Sorumlusu" sütunu boş olabilir
+                    - Supabase'de `bolge_sorumlusu` alanı NULL olabilir
+
+                    **Çözüm:** Excel dosyasına "Bölge Sorumlusu" sütununu doldurup tekrar yükleyin.
+                    """)
 
             with tabs[2]:
                 st.subheader("🏪 Mağaza Bazlı Özet")
