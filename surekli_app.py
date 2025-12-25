@@ -86,20 +86,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==================== SUPABASE BAĞLANTISI ====================
+supabase = None
 try:
     from supabase import create_client, Client
     SUPABASE_URL = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
     SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
 
-    @st.cache_resource
-    def get_supabase_client():
-        if SUPABASE_URL and SUPABASE_KEY:
-            return create_client(SUPABASE_URL, SUPABASE_KEY)
-        return None
-
-    supabase = get_supabase_client()
-except:
-    supabase = None
+    if SUPABASE_URL and SUPABASE_KEY:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        st.sidebar.success("✅ Supabase bağlandı")
+    else:
+        st.sidebar.warning("⚠️ Supabase secrets eksik")
+except Exception as e:
+    st.sidebar.error(f"❌ Supabase hata: {e}")
 
 # ==================== SESSION STATE ====================
 if 'logged_in' not in st.session_state:
