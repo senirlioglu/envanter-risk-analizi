@@ -1054,6 +1054,18 @@ def main_app():
                 # Sütunları göster
                 with st.expander("📋 Sütunlar"):
                     st.write(df.columns.tolist())
+                    # Bölge Sorumlusu kontrolü
+                    if 'Bölge Sorumlusu' in df.columns:
+                        bs_values = df['Bölge Sorumlusu'].dropna().unique()
+                        st.success(f"✅ Bölge Sorumlusu sütunu var - {len(bs_values)} farklı değer")
+                        if len(bs_values) > 0:
+                            st.write(f"Örnek değerler: {list(bs_values[:5])}")
+                    else:
+                        st.warning("⚠️ 'Bölge Sorumlusu' sütunu bulunamadı!")
+                        # Benzer sütun ara
+                        benzer = [c for c in df.columns if 'bolge' in c.lower() or 'sorumlu' in c.lower()]
+                        if benzer:
+                            st.info(f"Benzer sütunlar: {benzer}")
 
                 # Önizleme
                 with st.expander("👁️ Veri Önizleme"):
