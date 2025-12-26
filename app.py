@@ -473,8 +473,16 @@ def save_to_supabase(df_original):
                 st.warning(f"Batch {i//batch_size + 1} hatası: {str(e)[:100]}")
         
         new_list = [k.replace('|', ' / ') for k in new_env_keys]
+
+        # ⚡ MATERIALIZED VIEW varsa refresh et
+        if inserted > 0:
+            try:
+                refresh_materialized_view()
+            except:
+                pass  # Hata olsa bile devam et
+
         return inserted, len(skipped_env_keys), f"Yüklenen: {', '.join(new_list[:3])}..."
-        
+
     except Exception as e:
         return 0, 0, f"Hata: {str(e)}"
 
@@ -486,6 +494,24 @@ def save_to_supabase(df_original):
 
 # ⚠️ SİLİNDİ: get_available_sms_from_supabase
 # Artık VIEW üzerinden alınıyor: get_available_sms_cached()
+
+
+def refresh_materialized_view():
+    """
+    MATERIALIZED VIEW'i refresh et (Excel yüklemesinden sonra)
+    Not: v_magaza_ozet bir MATERIALIZED VIEW ise çalışır, regular VIEW ise sessizce geçer
+    """
+    try:
+        # Supabase'de SQL çalıştırmak için RPC kullan
+        # Eğer MATERIALIZED VIEW yoksa (hala regular VIEW ise), bu hata vermez
+        supabase.rpc('refresh_magaza_ozet').execute()
+        st.success("✅ VIEW güncellendi - yeni veriler hazır!")
+    except Exception as e:
+        # Eğer RPC fonksiyonu yoksa veya VIEW regular ise, sessizce geç
+        # (MATERIALIZED VIEW'e geçmeden önce bu normal)
+        error_msg = str(e).lower()
+        if 'function' not in error_msg and 'not found' not in error_msg:
+            st.warning(f"VIEW refresh edilemedi (normal VIEW kullanılıyor olabilir): {str(e)[:100]}")
 
 
 @st.cache_data(ttl=600)  # 10 dakika cache

@@ -121,6 +121,21 @@ REFRESH MATERIALIZED VIEW v_magaza_ozet;
 -- STEP 6: Statement timeout'u kalıcı olarak artır
 ALTER DATABASE postgres SET statement_timeout = '120s';
 
+-- STEP 7: RPC fonksiyonu oluştur (Python'dan çağrılacak)
+-- Bu fonksiyon Excel yükleme sonrası otomatik refresh için
+CREATE OR REPLACE FUNCTION refresh_magaza_ozet()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW v_magaza_ozet;
+END;
+$$;
+
+-- Fonksiyona public erişimi ver (Supabase anon key ile çağrılabilsin)
+GRANT EXECUTE ON FUNCTION refresh_magaza_ozet() TO anon, authenticated;
+
 -- ========================================
 -- TAMAMLANDI!
 -- ========================================
@@ -130,7 +145,12 @@ SELECT COUNT(*) FROM v_magaza_ozet WHERE envanter_donemi = '202512';
 -- 163 satır dönmeli ve HIZLI olmalı (< 1 saniye)
 
 -- ========================================
--- ÖNEMLİ: Excel yükledikten sonra refresh et
+-- ARTIK MANUEL REFRESH GEREKMEZ! ✅
 -- ========================================
--- Her veri yükleme işleminden sonra şunu çalıştır:
+-- Python uygulaması Excel yükleme sonrası otomatik olarak
+-- refresh_magaza_ozet() fonksiyonunu çağıracak.
+--
+-- Eğer manuel refresh gerekirse:
+-- SELECT refresh_magaza_ozet();
+-- VEYA
 -- REFRESH MATERIALIZED VIEW v_magaza_ozet;
