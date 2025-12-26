@@ -112,7 +112,21 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         saat = row.get(col_saat, '')
         miktar = row.get(col_miktar, 0)
         islem_no = row.get(col_islem_no, '')
-        kasa_no = row.get(col_kasa, '')  # ← YENİ: Gerçek kasa numarası
+        kasa_no_raw = row.get(col_kasa, '')  # Gerçek kasa numarası (sheets'ten)
+
+        # Eğer kasa_no kolonu yoksa veya boşsa, işlem numarasından parse et
+        kasa_no = ''
+        if kasa_no_raw and str(kasa_no_raw).strip() and str(kasa_no_raw).strip() != 'nan':
+            kasa_no = str(kasa_no_raw).strip()
+        elif len(str(islem_no)) >= 6:
+            # Fallback: İşlem numarasından al (ama sadece 1-3 arası)
+            try:
+                parsed_kasa = int(str(islem_no)[4:6])
+                # Sadece 1-3 arası değerler kabul et
+                if 1 <= parsed_kasa <= 3:
+                    kasa_no = str(parsed_kasa)
+            except:
+                pass
 
         if malzeme not in result:
             result[malzeme] = []
@@ -122,7 +136,7 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
             'saat': saat,
             'miktar': miktar,
             'islem_no': islem_no,
-            'kasa_no': kasa_no  # ← YENİ
+            'kasa_no': kasa_no
         })
     
     return result
