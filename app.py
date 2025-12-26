@@ -3185,7 +3185,12 @@ if analysis_mode == "👔 SM Özet":
                     
                     mag_options = [f"{row['Mağaza Kodu']} - {row['Mağaza Adı']}" for _, row in region_df.iterrows()]
                     selected_mag_option = st.selectbox("Mağaza seçin", mag_options, key="sm_mag_select")
-                    
+
+                    # Session state'de raporu sakla
+                    if 'sm_report_data' not in st.session_state:
+                        st.session_state.sm_report_data = None
+                        st.session_state.sm_report_name = None
+
                     if st.button("📥 Rapor Oluştur", key="sm_create_report"):
                         selected_mag_kod = selected_mag_option.split(" - ")[0]
                         selected_row = region_df[region_df['Mağaza Kodu'] == selected_mag_kod].iloc[0]
@@ -3230,17 +3235,24 @@ if analysis_mode == "👔 SM Özet":
                                 )
                                 
                                 mag_adi_clean = mag_adi.replace(' ', '_').replace('/', '_')[:30] if mag_adi else ''
-                                
-                                st.download_button(
-                                    "📥 İndir", 
-                                    data=report_data,
-                                    file_name=f"{selected_mag_kod}_{mag_adi_clean}_Risk_Raporu.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key="sm_download_report"
-                                )
+
+                                # Session state'e kaydet
+                                st.session_state.sm_report_data = report_data
+                                st.session_state.sm_report_name = f"{selected_mag_kod}_{mag_adi_clean}_Risk_Raporu.xlsx"
+
                                 st.success("✅ Rapor hazır!")
                             else:
                                 st.error("Veri çekilemedi!")
+
+                    # Download button'u her zaman göster (eğer rapor hazırsa)
+                    if st.session_state.sm_report_data is not None:
+                        st.download_button(
+                            "📥 Raporu İndir",
+                            data=st.session_state.sm_report_data,
+                            file_name=st.session_state.sm_report_name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="sm_download_report_persistent"
+                        )
                 
                 with tabs[1]:
                     st.subheader("🔴 Kritik Mağazalar")
@@ -3722,7 +3734,12 @@ elif analysis_mode == "🌍 GM Özet":
                     
                     mag_options_gm = [f"{row['Mağaza Kodu']} - {row['Mağaza Adı']}" for _, row in region_df.iterrows()]
                     selected_mag_gm = st.selectbox("Mağaza seçin", mag_options_gm, key="gm_mag_select")
-                    
+
+                    # Session state'de raporu sakla
+                    if 'gm_report_data' not in st.session_state:
+                        st.session_state.gm_report_data = None
+                        st.session_state.gm_report_name = None
+
                     if st.button("📥 Mağaza Raporu Oluştur", key="gm_create_mag_report"):
                         selected_mag_kod_gm = selected_mag_gm.split(" - ")[0]
                         selected_row_gm = region_df[region_df['Mağaza Kodu'] == selected_mag_kod_gm].iloc[0]
@@ -3769,17 +3786,25 @@ elif analysis_mode == "🌍 GM Özet":
                                 )
                                 
                                 mag_adi_clean_gm = mag_adi_gm.replace(' ', '_').replace('/', '_')[:30] if mag_adi_gm else ''
-                                
-                                st.download_button(
-                                    "📥 İndir", 
-                                    data=report_data_gm,
-                                    file_name=f"{selected_mag_kod_gm}_{mag_adi_clean_gm}_Risk_Raporu.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key="gm_download_mag_report"
-                                )
+
+                                # Session state'e kaydet
+                                st.session_state.gm_report_data = report_data_gm
+                                st.session_state.gm_report_name = f"{selected_mag_kod_gm}_{mag_adi_clean_gm}_Risk_Raporu.xlsx"
+                                st.session_state.gm_report_kod = selected_mag_kod_gm
+
                                 st.success(f"✅ {selected_mag_kod_gm} raporu hazır!")
                             else:
                                 st.error("Mağaza verisi bulunamadı")
+
+                    # Download button'u her zaman göster (eğer rapor hazırsa)
+                    if st.session_state.gm_report_data is not None:
+                        st.download_button(
+                            "📥 Raporu İndir",
+                            data=st.session_state.gm_report_data,
+                            file_name=st.session_state.gm_report_name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="gm_download_mag_report_persistent"
+                        )
                     
                     st.markdown("---")
                     st.markdown("""
