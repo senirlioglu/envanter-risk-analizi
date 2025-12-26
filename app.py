@@ -701,7 +701,30 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
 
     for attempt in range(max_retries):
         try:
-            query = supabase.table('v_magaza_ozet').select('*')
+            # ⚡ OPTIMIZASYON: SELECT * yerine sadece gerekli kolonları çek
+            required_columns = [
+                'magaza_kodu',
+                'magaza_tanim',
+                'satis_muduru',
+                'bolge_sorumlusu',
+                'envanter_donemi',
+                'envanter_tarihi',
+                'envanter_baslangic_tarihi',
+                'fark_tutari',
+                'kismi_tutari',
+                'fire_tutari',
+                'satis',
+                'fark_miktari',
+                'kismi_miktari',
+                'onceki_fark_miktari',
+                'sigara_net',
+                'ic_hirsizlik',
+                'kronik_acik',
+                'kronik_fire',
+                'kasa_adet',
+                'kasa_tutar'
+            ]
+            query = supabase.table('v_magaza_ozet').select(','.join(required_columns))
 
             if satis_muduru:
                 query = query.eq('satis_muduru', satis_muduru)
@@ -715,7 +738,20 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
             if tarih_bitis:
                 query = query.lte('envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
 
+            # ⚡ ORDER BY ekle - index kullanımı için (envanter_donemi indexed olmalı)
+            query = query.order('envanter_donemi', desc=True).order('magaza_kodu')
+
+            # ⚡ LIMIT ekle - eğer çok fazla veri varsa timeout olmasın
+            # Not: GM Özet için genelde ~200-500 satır bekleniyor, ama güvenlik için 5000 limit
+            query = query.limit(5000)
+
             result = query.execute()
+
+            # 🐛 DEBUG: Kaç satır geldi?
+            if result.data:
+                row_count = len(result.data)
+                if row_count >= 4500:
+                    st.warning(f"⚠️ Çok fazla veri var ({row_count} satır). Lütfen daha kısa dönem veya tarih aralığı seçin.")
 
             # Başarılı olduysa döngüden çık
             break
@@ -1046,7 +1082,8 @@ def get_envanter_tarihleri_by_donem(donemler_tuple):
             if not donemler_tuple:
                 return []
             donemler = list(donemler_tuple)  # tuple'ı list'e çevir
-            query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
+            # ⚡ OPTIMIZASYON: Sadece unique tarihler - LIMIT ekle
+            query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler).limit(1000)
             result = query.execute()
             if result.data:
                 tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
