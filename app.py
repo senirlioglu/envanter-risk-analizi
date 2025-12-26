@@ -57,10 +57,10 @@ def get_iptal_verisi_from_sheets():
 def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     """Belirli mağaza ve ürünler için iptal timestamp bilgilerini döner"""
     df_iptal = get_iptal_verisi_from_sheets()
-    
+
     if df_iptal.empty:
         return {}
-    
+
     # Sabit sütun isimleri - doğrudan kullan
     col_magaza = 'Mağaza - Anahtar'
     col_malzeme = 'Malzeme - Anahtar'
@@ -68,7 +68,8 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     col_saat = 'Fiş Saati'
     col_miktar = 'Miktar'
     col_islem_no = 'İşlem Numarası'
-    
+    col_kasa = 'Kasa Numarası'  # ← YENİ: Gerçek kasa numarası kolonu
+
     # Sütunlar yoksa index ile dene
     cols = df_iptal.columns.tolist()
     if col_magaza not in cols and len(cols) > 7:
@@ -111,15 +112,17 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         saat = row.get(col_saat, '')
         miktar = row.get(col_miktar, 0)
         islem_no = row.get(col_islem_no, '')
-        
+        kasa_no = row.get(col_kasa, '')  # ← YENİ: Gerçek kasa numarası
+
         if malzeme not in result:
             result[malzeme] = []
-        
+
         result[malzeme].append({
             'tarih': tarih,
             'saat': saat,
             'miktar': miktar,
-            'islem_no': islem_no
+            'islem_no': islem_no,
+            'kasa_no': kasa_no  # ← YENİ
         })
     
     return result
@@ -264,16 +267,15 @@ def _ara_iptal_kaydi(malzeme_kodu, iptal_data, kamera_limit):
     for iptal in son_15_gun_sorted[:3]:  # En fazla 3 kayıt göster
         tarih = iptal['tarih_dt'].strftime('%d.%m.%Y')
         saat = str(iptal.get('saat', ''))[:8]
-        islem_no = str(iptal.get('islem_no', ''))
-        
-        # İşlem numarasından kasa numarasını çıkar (örn: 79150012711503250661 -> pozisyon 4-5)
+        kasa_no_raw = str(iptal.get('kasa_no', '')).strip()
+
+        # Kasa numarasını formatla (1-3 arası olmalı, 0 olamaz)
         kasa_no = ""
-        if len(islem_no) >= 6:
-            try:
-                kasa_no = f"Kasa:{int(islem_no[4:6])}"
-            except:
-                kasa_no = ""
-        
+        if kasa_no_raw and kasa_no_raw.isdigit():
+            kasa_num = int(kasa_no_raw)
+            if 1 <= kasa_num <= 3:  # Mağazada max 3 kasa olabilir
+                kasa_no = f"Kasa:{kasa_num}"
+
         detaylar.append(f"{tarih} {saat} {kasa_no}".strip())
     
     return {
