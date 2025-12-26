@@ -68,10 +68,23 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
     col_saat = 'Fiş Saati'
     col_miktar = 'Miktar'
     col_islem_no = 'İşlem Numarası'
-    col_kasa = 'Kasa Numarası'  # ← YENİ: Gerçek kasa numarası kolonu
 
-    # Sütunlar yoksa index ile dene
+    # Kasa numarası - farklı isim varyasyonlarını dene
+    col_kasa = None
     cols = df_iptal.columns.tolist()
+
+    # Önce tam isimle ara
+    kasa_variants = ['Kasa numarası', 'Kasa Numarası', 'Kasa numarası - Anahtar', 'Kasa Numarası - Anahtar']
+    for variant in kasa_variants:
+        if variant in cols:
+            col_kasa = variant
+            break
+
+    # Bulunamadıysa index ile dene (20. kolon)
+    if col_kasa is None and len(cols) > 20:
+        col_kasa = cols[20]
+
+    # Diğer sütunlar yoksa index ile dene
     if col_magaza not in cols and len(cols) > 7:
         col_magaza = cols[7]
     if col_malzeme not in cols and len(cols) > 17:
@@ -112,7 +125,21 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
         saat = row.get(col_saat, '')
         miktar = row.get(col_miktar, 0)
         islem_no = row.get(col_islem_no, '')
-        kasa_no = row.get(col_kasa, '')  # ← YENİ: Gerçek kasa numarası
+        kasa_no_raw = row.get(col_kasa, '')  # Gerçek kasa numarası (sheets'ten)
+
+        # Eğer kasa_no kolonu yoksa veya boşsa, işlem numarasından parse et
+        kasa_no = ''
+        if kasa_no_raw and str(kasa_no_raw).strip() and str(kasa_no_raw).strip() != 'nan':
+            kasa_no = str(kasa_no_raw).strip()
+        elif len(str(islem_no)) >= 6:
+            # Fallback: İşlem numarasından al (ama sadece 1-3 arası)
+            try:
+                parsed_kasa = int(str(islem_no)[4:6])
+                # Sadece 1-3 arası değerler kabul et
+                if 1 <= parsed_kasa <= 3:
+                    kasa_no = str(parsed_kasa)
+            except:
+                pass
 
         if malzeme not in result:
             result[malzeme] = []
@@ -122,7 +149,7 @@ def get_iptal_timestamps_for_magaza(magaza_kodu, malzeme_kodlari):
             'saat': saat,
             'miktar': miktar,
             'islem_no': islem_no,
-            'kasa_no': kasa_no  # ← YENİ
+            'kasa_no': kasa_no
         })
     
     return result
