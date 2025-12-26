@@ -692,25 +692,51 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
     """
     SM Özet ekranı için Supabase VIEW'den veri çek
     PAGINATION YOK - Tek sorguda tüm mağaza özetleri gelir (~200-300 satır)
-    
+
     tarih_baslangic, tarih_bitis: Envanter tarihi aralığı filtresi (opsiyonel)
     """
+    import time
+    max_retries = 3
+    retry_delay = 2  # saniye
+
+    for attempt in range(max_retries):
+        try:
+            query = supabase.table('v_magaza_ozet').select('*')
+
+            if satis_muduru:
+                query = query.eq('satis_muduru', satis_muduru)
+
+            if donemler and len(donemler) > 0:
+                query = query.in_('envanter_donemi', donemler)
+
+            # Tarih aralığı filtresi
+            if tarih_baslangic:
+                query = query.gte('envanter_tarihi', tarih_baslangic.strftime('%Y-%m-%d'))
+            if tarih_bitis:
+                query = query.lte('envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
+
+            result = query.execute()
+
+            # Başarılı olduysa döngüden çık
+            break
+
+        except Exception as e:
+            error_str = str(e)
+            # Timeout hatası kontrolü
+            if '57014' in error_str or 'timeout' in error_str.lower():
+                if attempt < max_retries - 1:
+                    st.warning(f"⏱️ Sorgu zaman aşımına uğradı, yeniden deneniyor... ({attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    st.error(f"❌ VIEW hatası: Sorgu zaman aşımına uğradı. Lütfen daha kısa bir dönem seçin veya tarih aralığı kullanın.")
+                    return pd.DataFrame()
+            else:
+                # Diğer hatalar için hemen dön
+                raise
+
     try:
-        query = supabase.table('v_magaza_ozet').select('*')
-        
-        if satis_muduru:
-            query = query.eq('satis_muduru', satis_muduru)
-        
-        if donemler and len(donemler) > 0:
-            query = query.in_('envanter_donemi', donemler)
-        
-        # Tarih aralığı filtresi
-        if tarih_baslangic:
-            query = query.gte('envanter_tarihi', tarih_baslangic.strftime('%Y-%m-%d'))
-        if tarih_bitis:
-            query = query.lte('envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
-        
-        result = query.execute()
         
         if not result.data:
             return pd.DataFrame()
@@ -859,9 +885,22 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
         df['BS'] = df['Bölge Sorumlusu']
         
         return df
-        
+
     except Exception as e:
-        st.error(f"VIEW hatası: {str(e)}")
+        import json
+        error_msg = str(e)
+        # JSON parse edebiliyorsak detaylı göster
+        try:
+            if '{' in error_msg:
+                error_dict = json.loads(error_msg[error_msg.index('{'):])
+                if 'code' in error_dict and error_dict['code'] == '57014':
+                    st.error(f"❌ VIEW hatası: Sorgu zaman aşımına uğradı (timeout). Lütfen daha kısa bir dönem seçin.")
+                else:
+                    st.error(f"VIEW hatası: {error_dict.get('message', error_msg)}")
+            else:
+                st.error(f"VIEW hatası: {error_msg}")
+        except:
+            st.error(f"VIEW hatası: {error_msg}")
         return pd.DataFrame()
 
 
@@ -998,27 +1037,40 @@ def get_available_sms_cached():
 @st.cache_data(ttl=300)
 def get_envanter_tarihleri_by_donem(donemler_tuple):
     """Seçilen dönemlerdeki envanter tarihlerini getir - CACHED"""
-    try:
-        if not donemler_tuple:
-            return []
-        donemler = list(donemler_tuple)  # tuple'ı list'e çevir
-        query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
-        result = query.execute()
-        if result.data:
-            tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
-            # Tarihleri datetime'a çevir ve sırala
-            tarih_dates = []
-            for t in tarihler:
-                try:
-                    if isinstance(t, str):
-                        tarih_dates.append(pd.to_datetime(t).date())
-                    else:
-                        tarih_dates.append(t)
-                except:
-                    pass
-            return sorted(tarih_dates)
-    except:
-        pass
+    import time
+    max_retries = 2
+    retry_delay = 1
+
+    for attempt in range(max_retries):
+        try:
+            if not donemler_tuple:
+                return []
+            donemler = list(donemler_tuple)  # tuple'ı list'e çevir
+            query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
+            result = query.execute()
+            if result.data:
+                tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
+                # Tarihleri datetime'a çevir ve sırala
+                tarih_dates = []
+                for t in tarihler:
+                    try:
+                        if isinstance(t, str):
+                            tarih_dates.append(pd.to_datetime(t).date())
+                        else:
+                            tarih_dates.append(t)
+                    except:
+                        pass
+                return sorted(tarih_dates)
+        except Exception as e:
+            error_str = str(e)
+            if '57014' in error_str or 'timeout' in error_str.lower():
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+            # Son deneme veya timeout dışı hata
+            if attempt == max_retries - 1:
+                st.warning("⚠️ Envanter tarihleri yüklenemedi. Tarih filtresi kullanılamayacak.")
+            break
     return []
 
 # Mobil uyumlu CSS
@@ -3253,17 +3305,17 @@ elif analysis_mode == "🌍 GM Özet":
     else:
         selected_periods = []
         st.warning("Henüz veri yüklenmemiş. SM'ler Excel yükledikçe veriler burada görünecek.")
-    
+
     # Tarih aralığı filtresi (opsiyonel)
     gm_tarih_baslangic = None
     gm_tarih_bitis = None
-    
+
     if selected_periods:
         # Seçilen dönemlerdeki envanter tarihlerini getir
         donem_tarihleri = get_envanter_tarihleri_by_donem(tuple(selected_periods))
-        
+
         if donem_tarihleri and len(donem_tarihleri) > 1:
-            with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel)", expanded=False):
+            with st.expander("📆 Tarih Aralığı Filtresi (Opsiyonel) - Zaman aşımı hatası alıyorsanız kullanın", expanded=False):
                 col_t1, col_t2 = st.columns(2)
                 with col_t1:
                     min_tarih = min(donem_tarihleri)
