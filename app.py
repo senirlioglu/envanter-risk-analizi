@@ -473,8 +473,16 @@ def save_to_supabase(df_original):
                 st.warning(f"Batch {i//batch_size + 1} hatası: {str(e)[:100]}")
         
         new_list = [k.replace('|', ' / ') for k in new_env_keys]
+
+        # ⚡ MATERIALIZED VIEW varsa refresh et
+        if inserted > 0:
+            try:
+                refresh_materialized_view()
+            except:
+                pass  # Hata olsa bile devam et
+
         return inserted, len(skipped_env_keys), f"Yüklenen: {', '.join(new_list[:3])}..."
-        
+
     except Exception as e:
         return 0, 0, f"Hata: {str(e)}"
 
@@ -486,6 +494,24 @@ def save_to_supabase(df_original):
 
 # ⚠️ SİLİNDİ: get_available_sms_from_supabase
 # Artık VIEW üzerinden alınıyor: get_available_sms_cached()
+
+
+def refresh_materialized_view():
+    """
+    MATERIALIZED VIEW'i refresh et (Excel yüklemesinden sonra)
+    Not: v_magaza_ozet bir MATERIALIZED VIEW ise çalışır, regular VIEW ise sessizce geçer
+    """
+    try:
+        # Supabase'de SQL çalıştırmak için RPC kullan
+        # Eğer MATERIALIZED VIEW yoksa (hala regular VIEW ise), bu hata vermez
+        supabase.rpc('refresh_magaza_ozet').execute()
+        st.success("✅ VIEW güncellendi - yeni veriler hazır!")
+    except Exception as e:
+        # Eğer RPC fonksiyonu yoksa veya VIEW regular ise, sessizce geç
+        # (MATERIALIZED VIEW'e geçmeden önce bu normal)
+        error_msg = str(e).lower()
+        if 'function' not in error_msg and 'not found' not in error_msg:
+            st.warning(f"VIEW refresh edilemedi (normal VIEW kullanılıyor olabilir): {str(e)[:100]}")
 
 
 @st.cache_data(ttl=600)  # 10 dakika cache
@@ -701,7 +727,30 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
 
     for attempt in range(max_retries):
         try:
-            query = supabase.table('v_magaza_ozet').select('*')
+            # ⚡ OPTIMIZASYON: SELECT * yerine sadece gerekli kolonları çek
+            required_columns = [
+                'magaza_kodu',
+                'magaza_tanim',
+                'satis_muduru',
+                'bolge_sorumlusu',
+                'envanter_donemi',
+                'envanter_tarihi',
+                'envanter_baslangic_tarihi',
+                'fark_tutari',
+                'kismi_tutari',
+                'fire_tutari',
+                'satis',
+                'fark_miktari',
+                'kismi_miktari',
+                'onceki_fark_miktari',
+                'sigara_net',
+                'ic_hirsizlik',
+                'kronik_acik',
+                'kronik_fire',
+                'kasa_adet',
+                'kasa_tutar'
+            ]
+            query = supabase.table('v_magaza_ozet').select(','.join(required_columns))
 
             if satis_muduru:
                 query = query.eq('satis_muduru', satis_muduru)
@@ -715,7 +764,20 @@ def get_sm_summary_from_view(satis_muduru=None, donemler=None, tarih_baslangic=N
             if tarih_bitis:
                 query = query.lte('envanter_tarihi', tarih_bitis.strftime('%Y-%m-%d'))
 
+            # ⚡ ORDER BY ekle - index kullanımı için (envanter_donemi indexed olmalı)
+            query = query.order('envanter_donemi', desc=True).order('magaza_kodu')
+
+            # ⚡ LIMIT ekle - eğer çok fazla veri varsa timeout olmasın
+            # Not: GM Özet için genelde ~200-500 satır bekleniyor, ama güvenlik için 5000 limit
+            query = query.limit(5000)
+
             result = query.execute()
+
+            # 🐛 DEBUG: Kaç satır geldi?
+            if result.data:
+                row_count = len(result.data)
+                if row_count >= 4500:
+                    st.warning(f"⚠️ Çok fazla veri var ({row_count} satır). Lütfen daha kısa dönem veya tarih aralığı seçin.")
 
             # Başarılı olduysa döngüden çık
             break
@@ -1046,7 +1108,8 @@ def get_envanter_tarihleri_by_donem(donemler_tuple):
             if not donemler_tuple:
                 return []
             donemler = list(donemler_tuple)  # tuple'ı list'e çevir
-            query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler)
+            # ⚡ OPTIMIZASYON: Sadece unique tarihler - LIMIT ekle
+            query = supabase.table('v_magaza_ozet').select('envanter_tarihi').in_('envanter_donemi', donemler).limit(1000)
             result = query.execute()
             if result.data:
                 tarihler = list(set([r['envanter_tarihi'] for r in result.data if r.get('envanter_tarihi')]))
